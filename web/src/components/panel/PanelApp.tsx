@@ -22,12 +22,57 @@ type Boot =
   | { phase: "login" }
   | { phase: "ready"; username: string };
 
+const NAV: { id: View; label: string; icon: React.ReactNode }[] = [
+  { id: "dashboard", label: "داشبورد", icon: <LayoutDashboard className="size-4.5" /> },
+  { id: "users", label: "کاربران", icon: <Users2 className="size-4.5" /> },
+  { id: "inbounds", label: "اینباندها", icon: <Globe2 className="size-4.5" /> },
+  { id: "settings", label: "تنظیمات", icon: <Settings className="size-4.5" /> },
+];
+
+// Hoisted OUT of the render: a component created inside render gets a new
+// type identity on every live/traffic update, remounting the whole sidebar
+// (and the mobile nav) every ~5 seconds — DOM churn, lost hover/focus state.
+function NavList({ view, setView, clientsCount, onNavigate }: {
+  view: View;
+  setView: (v: View) => void;
+  clientsCount: number;
+  onNavigate?: () => void;
+}) {
+  return (
+    <nav className="flex flex-col gap-1" aria-label="ناوبری اصلی">
+      {NAV.map((n) => (
+        <button
+          key={n.id}
+          onClick={() => { setView(n.id); onNavigate?.(); }}
+          aria-current={view === n.id ? "page" : undefined}
+          className={`flex items-center gap-3 rounded-xl px-4 py-3 text-[13.5px] font-semibold transition ${
+            view === n.id
+              ? "bg-gradient-to-l from-gold/20 to-gold/5 text-gtx border border-gold/25"
+              : "text-mu hover:text-tx hover:bg-white/[.04] border border-transparent"
+          }`}
+        >
+          {n.icon}
+          {n.label}
+          {n.id === "users" && clientsCount > 0 ? (
+            <span className="mr-auto text-[10.5px] rounded-full bg-white/6 px-2 py-0.5">{clientsCount.toLocaleString("fa-IR")}</span>
+          ) : null}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 export default function PanelApp() {
   return (
     <ToastHost>
       <Inner />
     </ToastHost>
   );
+}
+
+function isAuthError(e: unknown): boolean {
+  // api.req() maps 401 to this exact Persian message (before the body's error)
+  return e instanceof Error && e.message.includes("نشست منقضی");
 }
 
 function Inner() {
@@ -68,6 +113,13 @@ function Inner() {
     setBusy(true);
     try {
       const [s, c, i, se] = await Promise.allSettled([api.state(), api.clients(), api.inbounds(), api.settings()]);
+      // detect an expired session: every request 401s but allSettled swallows
+      // it — without this the panel shows stale data forever and the manual
+      // refresh button toasts success
+      if (s.status === "rejected" && isAuthError(s.reason) && c.status === "rejected" && isAuthError(c.reason)) {
+        setBoot({ phase: "login" });
+        return;
+      }
       if (s.status === "fulfilled") setSt(s.value);
       if (c.status === "fulfilled") setClients(c.value);
       if (i.status === "fulfilled") setInbounds(i.value);
@@ -84,6 +136,7 @@ function Inner() {
   const logout = async () => {
     try { await api.logout(); } catch { /* ignore */ }
     setSt(null); setClients([]); setInbounds(null); setSettings(null);
+    setView("dashboard"); // a fresh login should land on the dashboard, not the last tab
     setBoot({ phase: "login" });
   };
 
@@ -111,35 +164,6 @@ function Inner() {
   }
 
   // ── shell ───────────────────────────────────────────────────────────
-  const NAV: { id: View; label: string; icon: React.ReactNode }[] = [
-    { id: "dashboard", label: "داشبورد", icon: <LayoutDashboard className="size-4.5" /> },
-    { id: "users", label: "کاربران", icon: <Users2 className="size-4.5" /> },
-    { id: "inbounds", label: "اینباندها", icon: <Globe2 className="size-4.5" /> },
-    { id: "settings", label: "تنظیمات", icon: <Settings className="size-4.5" /> },
-  ];
-
-  const NavList = ({ onNavigate }: { onNavigate?: () => void }) => (
-    <nav className="flex flex-col gap-1" aria-label="ناوبری اصلی">
-      {NAV.map((n) => (
-        <button
-          key={n.id}
-          onClick={() => { setView(n.id); onNavigate?.(); }}
-          aria-current={view === n.id ? "page" : undefined}
-          className={`flex items-center gap-3 rounded-xl px-4 py-3 text-[13.5px] font-semibold transition ${
-            view === n.id
-              ? "bg-gradient-to-l from-gold/20 to-gold/5 text-gtx border border-gold/25"
-              : "text-mu hover:text-tx hover:bg-white/[.04] border border-transparent"
-          }`}
-        >
-          {n.icon}
-          {n.label}
-          {n.id === "users" && clients.length > 0 ? (
-            <span className="mr-auto text-[10.5px] rounded-full bg-white/6 px-2 py-0.5">{clients.length.toLocaleString("fa-IR")}</span>
-          ) : null}
-        </button>
-      ))}
-    </nav>
-  );
 
   return (
     <div className="min-h-screen flex flex-col lg:flex-row">
@@ -153,7 +177,7 @@ function Inner() {
             <p className="text-[10.5px] text-mu mt-1">پنل مدیریت — نسل ۳.۰</p>
           </div>
         </div>
-        <div className="mt-5 flex-1"><NavList /></div>
+        <div className="mt-5 flex-1"><NavList view={view} setView={setView} clientsCount={clients.length} /></div>
         <div className="border-t border-line pt-4 space-y-2">
           <div className="flex items-center gap-2.5 px-2">
             <span className="size-8 rounded-full bg-gradient-to-b from-gold2 to-goldd grid place-items-center text-black text-[12px] font-bold">
@@ -209,7 +233,7 @@ function Inner() {
           {!st && view === "dashboard" ? <div className="py-20 text-center"><Spinner className="size-7" /></div> : null}
         </main>
 
-        <footer className="hidden lg:block border-t border-line px-6 py-3.5 text-[11px] text-mu flex justify-between items-center mt-auto">
+        <footer className="hidden lg:flex border-t border-line px-6 py-3.5 text-[11px] text-mu justify-between items-center mt-auto">
           <span>© ۲۰۲۶ NullGate — ساخته‌شده با Next.js + Go + PostgreSQL</span>
           <span className="flex items-center gap-1.5">اتصال امن، بدون محدودیت <span className="text-gtx">◆</span></span>
         </footer>
@@ -230,7 +254,7 @@ function Inner() {
                 <X className="size-4.5" />
               </button>
             </div>
-            <NavList onNavigate={() => setNavOpen(false)} />
+            <NavList view={view} setView={setView} clientsCount={clients.length} onNavigate={() => setNavOpen(false)} />
             <button onClick={logout} className="ng-btn ng-btn-ghost w-full !text-[12.5px] !text-bad/90 mt-6">
               <LogOut className="size-4" /> خروج از حساب
             </button>

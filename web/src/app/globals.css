@@ -23,7 +23,10 @@
 }
 
 :root {
-  --font-vazir: "Vazirmatn";
+  /* NOTE: --font-vazir is defined by next/font (layout.tsx vazir.variable).
+     Redefining it here as "Vazirmatn" used to override the generated
+     @font-face family ("vazir") and silently drop every Vazirmatn weight —
+     the whole RTL UI fell back to Tahoma. */
   color-scheme: dark;
 }
 

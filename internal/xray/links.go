@@ -180,6 +180,12 @@ func BuildLinks(o LinkOpts) []Link {
                         "vless://" + o.ClientID + "@" + o.TCPHost + ":" + o.TCPPort + "?" + p + "#" + pyQuote(n)})
         }
         for _, ib := range o.Customs {
+                // the server config only authenticates users whose per-user protocol
+                // list contains the inbound tag — emitting the link anyway hands the
+                // user a config that can never connect
+                if len(o.UserProtocols) > 0 && !containsString(o.UserProtocols, ib.Tag) {
+                        continue
+                }
                 if ib.Security == "reality" {
                         if o.Reality.Pub == "" {
                                 continue
@@ -195,6 +201,15 @@ func BuildLinks(o LinkOpts) []Link {
                 links = append(links, l)
         }
         return links
+}
+
+func containsString(list []string, v string) bool {
+        for _, s := range list {
+                if s == v {
+                        return true
+                }
+        }
+        return false
 }
 
 // customLink mirrors panel.py custom_link.

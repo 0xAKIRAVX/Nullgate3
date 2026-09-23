@@ -9,6 +9,10 @@ export function bytesFmt(n: number, digits = true): string {
   const s = v >= 100 || i === 0 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
   return `${s} ${units[i]}`;
 }
+// keep zero consistent with other values ("0 B"), not unit-less "0"
+export function bytesFmt0(n: number): string {
+  return n <= 0 ? "0 B" : bytesFmt(n);
+}
 
 export function gbFmt(gb: number): string {
   return gb > 0 ? `${gb.toLocaleString("en-US")} GB` : "نامحدود";
@@ -27,15 +31,25 @@ export function daysLeft(iso: string | null | undefined): number | null {
   if (!iso) return null;
   const d = new Date(iso).getTime();
   if (isNaN(d)) return null;
-  return Math.ceil((d - Date.now()) / 86400000);
+  // calendar-day difference, not 24h buckets: expiring tonight at 23:30 must
+  // read as "امروز", not "۱ روز مانده" — and tomorrow's date is "فردا".
+  const startOfDay = (t: number) => {
+    const x = new Date(t);
+    x.setHours(0, 0, 0, 0);
+    return x.getTime();
+  };
+  return Math.round((startOfDay(d) - startOfDay(Date.now())) / 86400000);
 }
 
 export function expireLabel(iso: string | null | undefined): string {
   if (!iso) return "نامحدود";
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return "—";
+  if (t <= Date.now()) return "منقضی شده";
   const n = daysLeft(iso);
   if (n === null) return "—";
-  if (n <= 0) return "منقضی شده";
-  if (n === 1) return "امروز";
+  if (n <= 0) return "امروز";
+  if (n === 1) return "فردا";
   return `${n.toLocaleString("fa-IR")} روز مانده`;
 }
 
@@ -65,8 +79,10 @@ export function linkHost(uri: string): string {
       const j = JSON.parse(atob(uri.slice(8)));
       return `${j.add}:${j.port}`;
     }
-    const m = uri.match(/^[a-z]+:\/\/[^@/]+@([^:/?#]+):(\d+)/);
-    return m ? `${m[2]}:${m[3]}` : "—";
+    // share links look like scheme://uuid@host:443?query#frag — the original
+    // regex required a "/" after the port, so every real link matched nothing
+    const m = uri.match(/^[a-z]+:\/\/[^@/]+@([^:/?#]+):(\d+)(?:[/?#]|$)/);
+    return m ? `${m[1]}:${m[2]}` : "—";
   } catch {
     return "—";
   }

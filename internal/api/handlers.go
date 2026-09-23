@@ -5,12 +5,16 @@ import (
         "crypto/subtle"
         "encoding/base64"
         "encoding/json"
+        "errors"
+        "log"
+        "net"
         "net/http"
         "regexp"
         "strings"
         "time"
 
         "github.com/google/uuid"
+        "github.com/jackc/pgx/v5"
 
         "nullgate/api/internal/auth"
         "nullgate/api/internal/store"
@@ -85,8 +89,10 @@ func (s *Server) linkContext(ctx context.Context, client clientRow, host string)
 }
 
 func hostOnly(hostport string) string {
-        if i := strings.LastIndex(hostport, ":"); i > 0 && !strings.Contains(hostport[i:], "]") {
-                return hostport[:i]
+        // net.SplitHostPort handles "host:443", "[v6]:443" and bare v6 correctly;
+        // a bare "2001:db8::1" Host must NOT be chopped at the first colon.
+        if h, _, err := net.SplitHostPort(hostport); err == nil {
+                return h
         }
         return hostport
 }
@@ -103,7 +109,11 @@ func (s *Server) clientLinks(w http.ResponseWriter, r *http.Request) {
         err := s.Pool.QueryRow(r.Context(),
                 `SELECT name, protocols::text FROM clients WHERE id=$1::uuid`, id).Scan(&name, &protos)
         if err != nil {
-                writeErr(w, 404, "client not found")
+                if errors.Is(err, pgx.ErrNoRows) {
+                        writeErr(w, 404, "client not found")
+                } else {
+                        writeErr(w, 500, err.Error())
+                }
                 return
         }
         c := clientRow{ID: id, Name: name}
@@ -128,7 +138,11 @@ func (s *Server) clientConfig(w http.ResponseWriter, r *http.Request) {
         err := s.Pool.QueryRow(r.Context(),
                 `SELECT name, protocols::text FROM clients WHERE id=$1::uuid`, id).Scan(&name, &protos)
         if err != nil {
-                writeErr(w, 404, "client not found")
+                if errors.Is(err, pgx.ErrNoRows) {
+                        writeErr(w, 404, "client not found")
+                } else {
+                        writeErr(w, 500, err.Error())
+                }
                 return
         }
         c := clientRow{ID: id, Name: name}
@@ -183,51 +197,46 @@ func (s *Server) sub(w http.ResponseWriter, r *http.Request) {
                 http.Error(w, "not found", 404)
                 return
         }
-        rows, err := s.Pool.Query(r.Context(), `
+        var (
+                c        clientRow
+                expire   time.Time
+                protoRaw []byte
+                token    string
+        )
+        // sub_token is UNIQUE — select the single row directly instead of scanning
+        // the whole clients table into memory on every device poll.
+        err := s.Pool.QueryRow(r.Context(), `
                 SELECT c.id::text, c.name, c.quota, COALESCE(c.expire_at,'1970-01-01'::timestamptz),
                        c.protocols::text, c.sub_token, COALESCE(u.up,0), COALESCE(u.down,0)
-                FROM clients c LEFT JOIN client_usage u ON u.client_id = c.id`)
+                FROM clients c LEFT JOIN client_usage u ON u.client_id = c.id
+                WHERE c.sub_token = $1`, tok).Scan(
+                &c.ID, &c.Name, &c.Quota, &expire, &protoRaw, &token, &c.Up, &c.Down)
         if err != nil {
                 http.Error(w, "not found", 404)
                 return
         }
-        defer rows.Close()
-        var match *clientRow
-        for rows.Next() {
-                var c clientRow
-                var expire time.Time
-                var protoRaw, token []byte
-                if err := rows.Scan(&c.ID, &c.Name, &c.Quota, &expire, &protoRaw, &token, &c.Up, &c.Down); err != nil {
-                        continue
-                }
-                _ = json.Unmarshal(protoRaw, &c.Protocols)
-                if subtle.ConstantTimeCompare([]byte(string(token)), []byte(tok)) == 1 {
-                        if expire.Year() > 1971 {
-                                iso := expire.UTC().Format(time.RFC3339)
-                                c.ExpireAt = &iso
-                        }
-                        match = &c
-                        break
-                }
-        }
-        if match == nil {
+        if subtle.ConstantTimeCompare([]byte(token), []byte(tok)) != 1 {
                 http.Error(w, "not found", 404)
                 return
         }
-        o, err := s.linkContext(r.Context(), *match, r.Host)
+        _ = json.Unmarshal(protoRaw, &c.Protocols)
+        o, err := s.linkContext(r.Context(), c, r.Host)
         if err != nil {
                 http.Error(w, "server error", 500)
                 return
         }
         links := xray.BuildLinks(o)
         body := xray.SubBody(links)
-        title := base64.StdEncoding.EncodeToString([]byte(match.Name))
-        info := []string{"upload=" + itoa64(match.Up), "download=" + itoa64(match.Down)}
-        if match.Quota > 0 {
-                info = append(info, "total="+itoa64(match.Quota))
+        title := base64.StdEncoding.EncodeToString([]byte(c.Name))
+        info := []string{"upload=" + itoa64(c.Up), "download=" + itoa64(c.Down)}
+        if c.Quota > 0 {
+                info = append(info, "total="+itoa64(c.Quota))
         }
-        if match.ExpireAt != nil {
-                info = append(info, "expire="+*match.ExpireAt)
+        if expire.Year() > 1971 {
+                // subscription-userinfo "expire" is a UNIX timestamp (v2rayNG,
+                // sing-box, Clash all parse it numerically) — RFC3339 is silently
+                // dropped by clients, hiding expiry from users.
+                info = append(info, "expire="+itoa64(expire.UTC().Unix()))
         }
         w.Header().Set("Content-Type", "text/plain; charset=utf-8")
         w.Header().Set("Profile-Title", "base64:"+title)
@@ -321,8 +330,10 @@ func (s *Server) createInbound(w http.ResponseWriter, r *http.Request) {
                 return
         }
         name := strings.TrimSpace(body.Name)
-        if len(name) > 30 {
-                name = name[:30]
+        // truncate on rune boundaries — byte slicing can cut a Persian name
+        // mid-rune, producing invalid UTF-8 that Postgres rejects
+        if runes := []rune(name); len(runes) > 30 {
+                name = string(runes[:30])
         }
         proto := strings.ToLower(strings.TrimSpace(body.Protocol))
         net := strings.ToLower(strings.TrimSpace(body.Network))
@@ -405,6 +416,12 @@ func (s *Server) createInbound(w http.ResponseWriter, r *http.Request) {
                         return
                 }
                 ib.LPort = s.freeLocalPort(ctx)
+                if ib.LPort == 0 {
+                        // port 0 would render an invalid Xray inbound and take the whole
+                        // engine down — reject the creation instead
+                        writeErr(w, 400, "هیچ پورت محلی آزادی باقی نمانده است")
+                        return
+                }
                 if net != "tcp" {
                         if net == "grpc" {
                                 svc := strings.Trim(strings.TrimSpace(body.Path), "/")
@@ -464,7 +481,10 @@ func (s *Server) createInbound(w http.ResponseWriter, r *http.Request) {
                 return
         }
         s.SyncCustomRoutes()
-        _ = s.Sup.Restart(ctx, false)
+        if err := s.Sup.Restart(ctx, false); err != nil {
+                // surface the failure in the log; the watchdog/collector keeps retrying
+                log.Printf("inbound %s: xray restart: %v", ib.Tag, err)
+        }
         writeJSON(w, 200, map[string]any{"ok": true, "inbound": ib})
 }
 
@@ -481,7 +501,9 @@ func (s *Server) deleteInbound(w http.ResponseWriter, r *http.Request) {
                 return
         }
         s.SyncCustomRoutes()
-        _ = s.Sup.Restart(r.Context(), false)
+        if err := s.Sup.Restart(r.Context(), false); err != nil {
+                log.Printf("inbound %s delete: xray restart: %v", tag, err)
+        }
         writeJSON(w, 200, map[string]any{"ok": true})
 }
 

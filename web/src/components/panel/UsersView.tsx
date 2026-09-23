@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   BadgeCheck, CalendarClock, Download, Infinity as InfinityIcon, Link2, Pencil,
   Plus, QrCode, Search, Trash2, UserRoundPlus,
@@ -8,7 +8,7 @@ import {
 import type { ClientRow, ProtocolKey, ShareLink } from "@/lib/panel/types";
 import { PROTOCOL_KEYS, PROTOCOL_LABELS } from "@/lib/panel/types";
 import { api, downloadClientJSON, subURL } from "@/lib/panel/api";
-import { bytesFmt, expireLabel, gbFmt, jalali, linkHost, linkLabel, pct } from "@/lib/panel/format";
+import { bytesFmt, expireLabel, jalali, linkHost, linkLabel, pct } from "@/lib/panel/format";
 import { Badge, CopyBtn, Field, Modal, QRImage, Spinner, useToast } from "./bits";
 
 type Draft = {
@@ -34,6 +34,7 @@ export default function UsersView({
   const [linksOf, setLinksOf] = useState<ClientRow | null>(null);
   const [links, setLinks] = useState<ShareLink[] | null>(null);
   const [del, setDel] = useState<ClientRow | null>(null);
+  const linksReqId = useRef(0);
 
   const filtered = useMemo(
     () => clients.filter((c) => c.name.toLowerCase().includes(q.trim().toLowerCase())),
@@ -43,10 +44,15 @@ export default function UsersView({
   const openLinks = async (c: ClientRow) => {
     setLinksOf(c);
     setLinks(null);
+    // guard against a fetch race: clicking user A then user B quickly must
+    // never render A's links under B's modal
+    const reqId = ++linksReqId.current;
     try {
       const r = await api.links(c.id);
+      if (reqId !== linksReqId.current) return; // a newer request superseded this one
       setLinks(r.links);
     } catch (e) {
+      if (reqId !== linksReqId.current) return;
       toast("err", e instanceof Error ? e.message : "خطا در دریافت لینک‌ها");
       setLinks([]);
     }
@@ -129,13 +135,21 @@ export default function UsersView({
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2 mb-1.5" dir="ltr">
                           <span className="mono text-[11px] text-tx">{bytesFmt(used)}</span>
-                          <span className="mono text-[10px] text-mu">/ {bytesFmt(c.quota)}</span>
+                          {c.quota > 0 ? (
+                            <span className="mono text-[10px] text-mu">/ {bytesFmt(c.quota)}</span>
+                          ) : (
+                            <span className="mono text-[10px] text-mu">/ نامحدود</span>
+                          )}
                         </div>
                         <div className="h-1.5 rounded-full bg-white/6 overflow-hidden" role="progressbar" aria-valuenow={p} aria-valuemin={0} aria-valuemax={100}>
-                          <div
-                            className={`h-full rounded-full transition-all ${p >= 100 ? "bg-bad" : p >= 80 ? "bg-warn" : "bg-gradient-to-l from-gold to-gold2"}`}
-                            style={{ width: `${Math.max(2, c.quota ? p : Math.min(100, (used / (5 * (1 << 30))) * 100))}%` }}
-                          />
+                          {c.quota > 0 ? (
+                            <div
+                              className={`h-full rounded-full transition-all ${p >= 100 ? "bg-bad" : p >= 80 ? "bg-warn" : "bg-gradient-to-l from-gold to-gold2"}`}
+                              style={{ width: `${Math.max(2, p)}%` }}
+                            />
+                          ) : (
+                            <div className="h-full w-[3px] rounded-full bg-gradient-to-l from-gold to-gold2/40" />
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3">
@@ -147,7 +161,7 @@ export default function UsersView({
                       </td>
                       <td className="px-4 py-3">
                         <div className="text-[11.5px]">{jalali(c.expire_at)}</div>
-                        <div className={`text-[10px] ${expireLabel(c.expire_at) === "منقضی شده" ? "text-bad" : "text-mu"}`}>{expireLabel(c.expire_at)}</div>
+                        <div className={`text-[10px] ${c.status === "expired" ? "text-bad" : "text-mu"}`}>{expireLabel(c.expire_at)}</div>
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1 max-w-[150px]">
@@ -284,19 +298,29 @@ function UserFormModal({
 
   const submit = async () => {
     setBusy(true);
-    const body = {
+    const body: {
+      name: string; quota_gb: number; expire_days?: number;
+      protocols: string[]; note: string;
+    } = {
       name: d.name.trim(),
+      // quota 0 == unlimited is explicit user intent (prefilled with the
+      // current quota, blanking it means "make unlimited")
       quota_gb: Number(d.quota_gb) || 0,
-      expire_days: Number(d.expire_days) || 0,
       protocols: PROTOCOL_KEYS.filter((k) => d.protocols[k]),
       note: d.note.trim(),
     };
+    if (!edit || d.expire_days.trim() !== "") {
+      // CRITICAL: in edit mode a blank expire field means "keep the current
+      // expiry" — sending 0 here used to silently NULL expire_at on every
+      // rename/note save (the Go handler treats <= 0 as "clear").
+      body.expire_days = Number(d.expire_days) || 0;
+    }
     try {
       if (edit) {
         await api.patchClient(edit.id, body);
         await onSaved(`کاربر «${body.name}» به‌روزرسانی شد`);
       } else {
-        await api.createClient(body);
+        await api.createClient({ ...body, expire_days: Number(d.expire_days) || 0 });
         await onSaved(`کاربر «${body.name}» ساخته شد`);
       }
     } catch (e) {
@@ -316,7 +340,7 @@ function UserFormModal({
           <Field label="سقف حجم (GB)" hint="خالی یا صفر = نامحدود">
             <input className="ng-input" dir="ltr" inputMode="decimal" placeholder="50" value={d.quota_gb} onChange={(e) => setD({ ...d, quota_gb: e.target.value })} />
           </Field>
-          <Field label={edit ? "تمدید (روز از امروز)" : "انقضا (روز)" } hint="خالی یا صفر = بدون انقضا">
+          <Field label={edit ? "تمدید (روز از امروز)" : "انقضا (روز)" } hint={edit ? "خالی = بدون تغییر انقضای فعلی" : "خالی یا صفر = بدون انقضا"}>
             <input className="ng-input" dir="ltr" inputMode="numeric" placeholder="30" value={d.expire_days} onChange={(e) => setD({ ...d, expire_days: e.target.value })} />
           </Field>
         </div>

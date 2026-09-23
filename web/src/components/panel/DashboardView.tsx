@@ -23,10 +23,15 @@ export default function DashboardView({
   // live delta samples → sparkline (state so renders stay pure)
   const [spark, setSpark] = useState<number[]>([]);
   const last = useRef<number>(total);
+  const prevMode = useRef(live.mode);
   useEffect(() => {
+    const modeChanged = prevMode.current !== live.mode;
+    prevMode.current = live.mode;
     const d = Math.max(0, total - last.current);
     last.current = total;
-    if (live.mode !== "init") {
+    // a pure mode flip (init → ws/poll) carries no new sample — pushing the
+    // 0 delta used to dent the graph once on every connection
+    if (live.mode !== "init" && !modeChanged) {
       setSpark((s) => [...s.slice(-39), d]);
     }
   }, [total, live.mode]);

@@ -21,8 +21,18 @@ export default function SettingsView({
   const [logs, setLogs] = useState<string[] | null>(null);
   const [logBusy, setLogBusy] = useState(false);
   const logBox = useRef<HTMLPreElement>(null);
+  // dirty flag: a background reload (topbar refresh, live updates) must not
+  // wipe the admin's unsaved form edits
+  const dirty = useRef(false);
 
-  useEffect(() => setForm(settings), [settings]);
+  useEffect(() => {
+    if (!dirty.current) setForm(settings);
+  }, [settings]);
+
+  const upd = (patch: Partial<PanelSettings>) => {
+    dirty.current = true;
+    setForm((f) => (f ? { ...f, ...patch } : f));
+  };
 
   const save = async () => {
     if (!form) return;
@@ -35,6 +45,7 @@ export default function SettingsView({
         protocols: form.protocols,
       });
       toast("ok", "تنظیمات ذخیره شد — لینک‌های جدید از الان اعمال می‌شوند");
+      dirty.current = false; // re-sync with the server state below
       await reload();
     } catch (e) {
       toast("err", e instanceof Error ? e.message : "خطا در ذخیره");
@@ -48,6 +59,8 @@ export default function SettingsView({
     try {
       await api.restart();
       toast("ok", "Xray با کانفیگ جدید ری‌استارت شد");
+      // reload so uptime / restart counters on the dashboard refresh
+      await reload();
     } catch (e) {
       toast("err", e instanceof Error ? e.message : "خطا در ری‌استارت");
     } finally {
@@ -87,19 +100,19 @@ export default function SettingsView({
           <Field label="آدرس سرور (اختیاری)" hint="خالی = دامنه‌ی درخواست به‌صورت خودکار استفاده می‌شود. برای Railway دامنه سرویس api را بگذارید.">
             <input
               className="ng-input" dir="ltr" placeholder="nullgate-api.up.railway.app"
-              value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })}
+              value={form.address} onChange={(e) => upd({ address: e.target.value })}
             />
           </Field>
           <Field label="SNI پیش‌فرض Reality" hint="دامنه‌ای که handshake TLS به آن جعل می‌شود — پیشنهادی: www.samsung.com (سازگار با REALITY)">
             <input
               className="ng-input" dir="ltr" placeholder="www.samsung.com"
-              value={form.reality_sni} onChange={(e) => setForm({ ...form, reality_sni: e.target.value })}
+              value={form.reality_sni} onChange={(e) => upd({ reality_sni: e.target.value })}
             />
           </Field>
           <Field label="قالب نام کانفیگ" hint="متغیرها: {name} {label} — مثلاً {name}-{label}">
             <input
               className="ng-input" dir="ltr" placeholder="{name}-{label}"
-              value={form.cfg_fmt} onChange={(e) => setForm({ ...form, cfg_fmt: e.target.value })}
+              value={form.cfg_fmt} onChange={(e) => upd({ cfg_fmt: e.target.value })}
             />
           </Field>
           <div className="flex items-center justify-between ng-card !rounded-xl px-3.5 py-3">
@@ -126,7 +139,7 @@ export default function SettingsView({
                   <input
                     type="checkbox" className="ng-check size-4.5"
                     checked={on}
-                    onChange={(e) => setForm({ ...form, protocols: { ...form.protocols, [k]: e.target.checked } })}
+                    onChange={(e) => upd({ protocols: { ...form.protocols, [k]: e.target.checked } })}
                   />
                 </label>
               );

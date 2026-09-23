@@ -26,6 +26,10 @@ export function useLive(initial: PanelState | null): LiveState {
     mode: "init",
   });
   const wsFail = useRef(0);
+  // stable dependency: `initial` itself changes identity on every manual
+  // refresh, which used to tear down the live WS and repeat the whole
+  // connect/fail/fallback cycle each time the refresh button was clicked
+  const hasState = initial !== null;
 
   // seed from the first /api/state payload while WS/poll is still connecting
   useEffect(() => {
@@ -43,7 +47,7 @@ export function useLive(initial: PanelState | null): LiveState {
   }, [initial]);
 
   useEffect(() => {
-    if (!initial) return;
+    if (!hasState) return;
     let ws: WebSocket | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
     let alive = true;
@@ -54,7 +58,7 @@ export function useLive(initial: PanelState | null): LiveState {
       const tick = async () => {
         try {
           const res = await fetch("/api/state", { credentials: "include" });
-          if (!res.ok) return;
+          if (!res.ok) return; // 401 etc. — the shell's loader handles re-login
           const st = (await res.json()) as PanelState;
           setLive({
             up: st.traffic.up,
@@ -119,7 +123,7 @@ export function useLive(initial: PanelState | null): LiveState {
       if (poll) clearInterval(poll);
       if (ws) { ws.onclose = null; ws.close(); }
     };
-  }, [initial]);
+  }, [hasState]);
 
   return live;
 }

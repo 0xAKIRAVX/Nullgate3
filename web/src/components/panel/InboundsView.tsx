@@ -158,6 +158,21 @@ function CreateInboundModal({
   const submit = async () => {
     setBusy(true);
     try {
+      // client-side validation first — the old form sent port: 0 for a blank
+      // Reality port (Number("") === 0) and only failed late with a server 400
+      if (d.security === "reality") {
+        const p = Number(d.port);
+        if (!d.port.trim() || !Number.isInteger(p) || p < 1024 || p > 65535) {
+          toast("err", "پورت Reality باید عددی بین ۱۰۲۴ تا ۶۵۵۳۵ باشد");
+          setBusy(false);
+          return;
+        }
+        if (d.network !== "vless") {
+          toast("err", "Reality فقط با پروتکل VLESS کار می‌کند");
+          setBusy(false);
+          return;
+        }
+      }
       await api.createInbound({
         name: d.name.trim(),
         protocol: d.protocol,
@@ -217,10 +232,22 @@ function CreateInboundModal({
                 <input className="ng-input" dir="ltr" placeholder="www.samsung.com" value={d.sni} onChange={(e) => setD({ ...d, sni: e.target.value })} />
               </Field>
             </div>
+            {d.network === "grpc" ? (
+              // the Go handler requires a valid gRPC service name for
+              // reality+grpc — the form never offered the field, so every such
+              // submit failed with a 400 about an invisible input
+              <Field label="Service name (gRPC)" hint="۳ تا ۴۰ نویسه — حروف انگلیسی/عدد/خط تیره">
+                <input className="ng-input" dir="ltr" placeholder="GunService" value={d.path} onChange={(e) => setD({ ...d, path: e.target.value })} />
+              </Field>
+            ) : d.network === "xhttp" ? (
+              <Field label="مسیر (Path)" hint="خالی = تصادفی امن">
+                <input className="ng-input" dir="ltr" placeholder="/mypath" value={d.path} onChange={(e) => setD({ ...d, path: e.target.value })} />
+              </Field>
+            ) : null}
           </>
         ) : (
-          <Field label="مسیر (Path)" hint="برای ws/xhttp/httpupgrade — grpc = Service name؛ خالی = تصادفی امن">
-            <input className="ng-input" dir="ltr" placeholder="/mypath" value={d.path} onChange={(e) => setD({ ...d, path: e.target.value })} />
+          <Field label={d.network === "grpc" ? "Service name (gRPC)" : "مسیر (Path)"} hint={d.network === "grpc" ? "۳ تا ۴۰ نویسه — خالی = تصادفی امن" : "برای ws/xhttp/httpupgrade؛ خالی = تصادفی امن"}>
+            <input className="ng-input" dir="ltr" placeholder={d.network === "grpc" ? "GunService" : "/mypath"} value={d.path} onChange={(e) => setD({ ...d, path: e.target.value })} />
           </Field>
         )}
 

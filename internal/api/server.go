@@ -3,6 +3,7 @@ package api
 import (
         "encoding/json"
         "errors"
+        "log"
         "math"
         "net/http"
         "strings"
@@ -19,7 +20,7 @@ import (
         "nullgate/api/internal/xray"
 )
 
-const Version = "3.0.0-alpha.2"
+const Version = "3.0.0-alpha.3"
 
 type Server struct {
         Cfg  *config.Config
@@ -84,11 +85,17 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) cors(next http.Handler) http.Handler {
         return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                w.Header().Add("Vary", "Origin")
                 if origin := r.Header.Get("Origin"); origin != "" {
-                        if s.Cfg.CORSOrigin == "*" || origin == s.Cfg.CORSOrigin {
+                        // Only a strict, explicitly configured origin may call the API
+                        // cross-site WITH credentials. The default ("*") keeps the panel
+                        // same-origin-only — reflecting arbitrary origins together with
+                        // Allow-Credentials would let any website hijack the admin session
+                        // cookie (the UI is embedded and served same-origin, so the default
+                        // costs nothing).
+                        if s.Cfg.CORSOrigin != "" && s.Cfg.CORSOrigin != "*" && origin == s.Cfg.CORSOrigin {
                                 w.Header().Set("Access-Control-Allow-Origin", origin)
                                 w.Header().Set("Access-Control-Allow-Credentials", "true")
-                                w.Header().Add("Vary", "Origin")
                         }
                 }
                 if r.Method == http.MethodOptions {
@@ -167,14 +174,21 @@ func (s *Server) grpcProbe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
         redisState := "off"
-        if s.Auth != nil {
-                _ = s.Auth // redis state tracked in main; simplified here
+        if s.Auth.RedisAlive(r.Context()) {
+                redisState = "on"
         }
         dbOK := true
-        if err := s.Pool.Ping(r.Context()); err != nil {
-                dbOK = false
+        if s.Pool != nil {
+                if err := s.Pool.Ping(r.Context()); err != nil {
+                        dbOK = false
+                }
         }
-        writeJSON(w, http.StatusOK, map[string]any{
+        code := http.StatusOK
+        if !dbOK {
+                // HTTP-based monitors (Railway healthcheck) rely on a failing status.
+                code = http.StatusServiceUnavailable
+        }
+        writeJSON(w, code, map[string]any{
                 "ok": dbOK, "version": Version, "db": dbOK, "redis": redisState,
                 "proto": r.Proto,
         })
@@ -223,14 +237,23 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
                 return
         }
         var id int64
-        err = s.Pool.QueryRow(r.Context(),
-                `INSERT INTO admins(username, password_hash) VALUES($1,$2) RETURNING id`,
+        err = s.Pool.QueryRow(r.Context(), `
+                INSERT INTO admins(username, password_hash)
+                SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM admins)
+                RETURNING id`,
                 body.Username, hash).Scan(&id)
         if err != nil {
+                if errors.Is(err, pgx.ErrNoRows) {
+                        // TOCTOU guard: a concurrent setup request already created the admin.
+                        writeErr(w, http.StatusForbidden, "setup already completed")
+                        return
+                }
                 writeErr(w, 500, err.Error())
                 return
         }
-        s.startSession(w, r, id)
+        if err := s.startSession(w, r, id); err != nil {
+                return
+        }
         writeJSON(w, 200, map[string]any{"ok": true, "username": body.Username})
 }
 
@@ -256,6 +279,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
                 strings.TrimSpace(strings.ToLower(body.Username))).Scan(&id, &hash)
         if err != nil {
                 if errors.Is(err, pgx.ErrNoRows) {
+                        // burn the same bcrypt cost as the real path so response time does
+                        // not reveal whether the username exists
+                        _ = auth.CheckPassword(dummyBcryptHash, body.Password)
                         writeErr(w, 401, "wrong username or password")
                         return
                 }
@@ -267,15 +293,20 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
                 return
         }
         s.limiter.reset(ip)
-        s.startSession(w, r, id)
+        if err := s.startSession(w, r, id); err != nil {
+                return
+        }
         writeJSON(w, 200, map[string]any{"ok": true})
 }
 
-func (s *Server) startSession(w http.ResponseWriter, r *http.Request, adminID int64) {
+// dummyBcryptHash exists solely to equalize login response timing.
+var dummyBcryptHash, _ = auth.HashPassword("nullgate-timing-" + auth.RandomHex(8))
+
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request, adminID int64) error {
         tok, err := s.Auth.Create(r.Context(), adminID)
         if err != nil {
                 writeErr(w, 500, err.Error())
-                return
+                return err
         }
         cookie := &http.Cookie{
                 Name:     "ng_session",
@@ -291,6 +322,7 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, adminID in
                 cookie.Secure = true
         }
         http.SetCookie(w, cookie)
+        return nil
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -302,10 +334,15 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+        adminID, ok := r.Context().Value(adminKey).(int64)
+        if !ok {
+                writeErr(w, 401, "unauthorized")
+                return
+        }
         var username string
         err := s.Pool.QueryRow(r.Context(),
                 `SELECT username FROM admins WHERE id=$1`,
-                r.Context().Value(adminKey).(int64)).Scan(&username)
+                adminID).Scan(&username)
         if err != nil {
                 writeErr(w, 401, "session expired")
                 return
@@ -314,8 +351,13 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func clientIP(r *http.Request) string {
+        // Trust only the RIGHTMOST XFF entry: it is appended by the closest proxy
+        // (the platform edge). The first entry is client-controlled and trivially
+        // spoofed, which would let anyone bypass the login rate limiter by
+        // rotating fake IPs.
         if v := r.Header.Get("X-Forwarded-For"); v != "" {
-                return strings.TrimSpace(strings.Split(v, ",")[0])
+                parts := strings.Split(v, ",")
+                return strings.TrimSpace(parts[len(parts)-1])
         }
         return r.RemoteAddr
 }
@@ -347,6 +389,15 @@ func (l *loginLimiter) allow(key string) bool {
                 return false
         }
         l.hits[key] = append(l.hits[key], now)
+        // bound memory: drop keys with no recent hits once the map grows large
+        // (spoofed-IP attempts would otherwise leak entries forever)
+        if len(l.hits) > 4096 {
+                for k, v := range l.hits {
+                        if len(v) == 0 {
+                                delete(l.hits, k)
+                        }
+                }
+        }
         return true
 }
 
@@ -371,14 +422,23 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
         }
         var total, active int64
         var up, down int64
-        _ = s.Pool.QueryRow(ctx, `SELECT count(*) FROM clients`).Scan(&total)
-        _ = s.Pool.QueryRow(ctx, `
+        if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM clients`).Scan(&total); err != nil {
+                writeErr(w, 500, err.Error())
+                return
+        }
+        if err := s.Pool.QueryRow(ctx, `
                 SELECT count(*) FROM clients c
                 WHERE (c.expire_at IS NULL OR c.expire_at > now())
                   AND (c.quota = 0 OR c.quota > COALESCE((SELECT u.up+u.down FROM client_usage u WHERE u.client_id=c.id),0))
-        `).Scan(&active)
-        _ = s.Pool.QueryRow(ctx,
-                `SELECT COALESCE(SUM(up),0), COALESCE(SUM(down),0) FROM client_usage`).Scan(&up, &down)
+        `).Scan(&active); err != nil {
+                writeErr(w, 500, err.Error())
+                return
+        }
+        if err := s.Pool.QueryRow(ctx,
+                `SELECT COALESCE(SUM(up),0), COALESCE(SUM(down),0) FROM client_usage`).Scan(&up, &down); err != nil {
+                writeErr(w, 500, err.Error())
+                return
+        }
 
         writeJSON(w, 200, map[string]any{
                 "version":   Version,
@@ -420,16 +480,27 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
                 return
         }
         if v, ok := body["protocols"].(map[string]any); ok {
-                cur, _ := panel["protocols"].(map[string]bool)
-                if cur == nil {
-                        cur = store.DefaultPanelSettings(s.Cfg.RealitySNI, s.Cfg.SessionHours)["protocols"].(map[string]bool)
+                // panel comes from json.Unmarshal, so nested maps are map[string]any.
+                // Merge the STORED toggles first — a partial body must not reset the
+                // protocols the admin already disabled.
+                merged := map[string]bool{}
+                if cur, ok := panel["protocols"].(map[string]any); ok {
+                        for k, bv := range cur {
+                                if b, ok := bv.(bool); ok {
+                                        merged[k] = b
+                                }
+                        }
+                } else {
+                        for k, b := range store.DefaultPanelSettings(s.Cfg.RealitySNI, s.Cfg.SessionHours)["protocols"].(map[string]bool) {
+                                merged[k] = b
+                        }
                 }
                 for k, bv := range v {
                         if b, ok := bv.(bool); ok {
-                                cur[k] = b
+                                merged[k] = b
                         }
                 }
-                panel["protocols"] = cur
+                panel["protocols"] = merged
         }
         if v, ok := body["reality_sni"].(string); ok && strings.TrimSpace(v) != "" {
                 panel["reality_sni"] = strings.TrimSpace(v)
@@ -443,6 +514,13 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
         if err := store.PutJSON(ctx, s.Pool, "panel", panel); err != nil {
                 writeErr(w, 500, err.Error())
                 return
+        }
+        // protocol/SNI changes must reach the running Xray process; Restart's
+        // fingerprint check makes this a no-op when nothing actually changed.
+        if s.Sup != nil {
+                if err := s.Sup.Restart(ctx, false); err != nil {
+                        log.Printf("settings: xray restart: %v", err)
+                }
         }
         writeJSON(w, 200, panel)
 }
@@ -520,6 +598,10 @@ func (s *Server) listClients(w http.ResponseWriter, r *http.Request) {
                 }
                 out = append(out, c)
         }
+        if err := rows.Err(); err != nil {
+                writeErr(w, 500, err.Error())
+                return
+        }
         writeJSON(w, 200, out)
 }
 
@@ -537,6 +619,12 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
         body.Name = strings.TrimSpace(body.Name)
         if body.Name == "" {
                 writeErr(w, 400, "name is required")
+                return
+        }
+        // sanity bound: huge values would overflow int64 bytes and silently become
+        // "unlimited" (negative quota clamped to 0)
+        if body.QuotaGB < 0 || body.QuotaGB > 1<<20 {
+                writeErr(w, 400, "quota_gb must be between 0 and 1048576")
                 return
         }
         protoRaw, _ := json.Marshal(body.Protocols)
@@ -596,6 +684,10 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
         }
         var quota interface{}
         if body.QuotaGB != nil {
+                if *body.QuotaGB < 0 || *body.QuotaGB > 1<<20 {
+                        writeErr(w, 400, "quota_gb must be between 0 and 1048576")
+                        return
+                }
                 q := int64(*body.QuotaGB * (1 << 30))
                 if q < 0 {
                         q = 0
@@ -625,11 +717,22 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
                 writeErr(w, 404, "client not found")
                 return
         }
+        // protocol/protocol-membership changes must reach the running Xray process
+        // (Restart's fingerprint check keeps this a no-op when nothing changed).
+        if s.Sup != nil {
+                if err := s.Sup.Restart(r.Context(), false); err != nil {
+                        log.Printf("patch client: xray restart: %v", err)
+                }
+        }
         s.returnClient(w, r, id)
 }
 
 func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
         id := r.PathValue("id")
+        if _, err := uuid.Parse(id); err != nil {
+                writeErr(w, 400, "invalid client id")
+                return
+        }
         tag, err := s.Pool.Exec(r.Context(), `DELETE FROM clients WHERE id=$1::uuid`, id)
         if err != nil {
                 writeErr(w, 500, err.Error())
@@ -698,6 +801,10 @@ func (s *Server) listInbounds(w http.ResponseWriter, r *http.Request) {
                         "path": path, "svc": svc, "sni": sni, "builtin": false,
                         "reachable": reachable,
                 })
+        }
+        if err := rows.Err(); err != nil {
+                writeErr(w, 500, err.Error())
+                return
         }
         writeJSON(w, 200, map[string]any{"builtin": builtins, "custom": customs})
 }
