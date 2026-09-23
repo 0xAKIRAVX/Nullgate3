@@ -66,6 +66,7 @@ export interface InboundInfo {
   svc?: string;
   sni?: string;
   builtin: boolean;
+  reachable?: boolean; // reality customs: has a public TCP Proxy mapping?
 }
 
 export interface LiveMsg {

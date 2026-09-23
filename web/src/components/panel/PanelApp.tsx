@@ -9,6 +9,7 @@ import { api } from "@/lib/panel/api";
 import { useLive } from "@/lib/panel/useLive";
 import { Badge, Spinner, ToastHost, useToast } from "./bits";
 import LoginView from "./LoginView";
+import Logo from "./Logo";
 import DashboardView from "./DashboardView";
 import UsersView from "./UsersView";
 import InboundsView from "./InboundsView";
@@ -91,7 +92,7 @@ function Inner() {
       <main className="min-h-screen grid place-items-center">
         <div className="flex flex-col items-center gap-4">
           { }
-          <img src="/nullgate-logo.png" alt="NullGate" className="size-14 drop-shadow-[0_4px_16px_rgba(217,180,74,.35)]" />
+          <Logo className="size-14 drop-shadow-[0_4px_16px_rgba(217,180,74,.35)]" />
           <Spinner className="size-6" />
         </div>
       </main>
@@ -146,7 +147,7 @@ function Inner() {
       <aside className="hidden lg:flex w-[248px] shrink-0 flex-col border-l border-line bg-ink/60 px-4 py-5 sticky top-0 h-screen">
         <div className="flex items-center gap-3 px-2 pb-5 border-b border-line">
           { }
-          <img src="/nullgate-logo.png" alt="NullGate" className="size-10" />
+          <Logo className="size-10" />
           <div>
             <p className="font-bold text-[14px] gold-text leading-none">NullGate</p>
             <p className="text-[10.5px] text-mu mt-1">پنل مدیریت — نسل ۳.۰</p>
@@ -177,7 +178,7 @@ function Inner() {
             <Menu className="size-5" />
           </button>
           { }
-          <img src="/nullgate-logo.png" alt="" className="size-8 lg:hidden" />
+          <Logo className="size-8 lg:hidden" />
           <div className="flex-1 min-w-0">
             <h2 className="font-bold text-[14.5px] truncate">
               {view === "dashboard" ? "داشبورد" : view === "users" ? "مدیریت کاربران" : view === "inbounds" ? "اینباندها و مسیرها" : "تنظیمات پنل"}
@@ -222,7 +223,7 @@ function Inner() {
             <div className="flex items-center justify-between mb-5">
               <div className="flex items-center gap-2.5">
                 { }
-                <img src="/nullgate-logo.png" alt="" className="size-9" />
+                <Logo className="size-9" />
                 <p className="font-bold gold-text text-[14px]">NullGate ۳.۰</p>
               </div>
               <button onClick={() => setNavOpen(false)} className="p-2 rounded-lg hover:bg-white/5" aria-label="بستن منو">

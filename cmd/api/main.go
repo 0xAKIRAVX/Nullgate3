@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 
 	"nullgate/api/internal/api"
 	"nullgate/api/internal/auth"
@@ -96,9 +98,13 @@ func main() {
 	srv := api.NewServer(cfg, pool, am, sup, hub)
 	srv.SyncCustomRoutes()
 
+	// h2c: serve cleartext HTTP/2 alongside HTTP/1.1 — gRPC clients behind the
+	// platform edge reach the gRPC inbounds end-to-end over HTTP/2
+	handler := h2c.NewHandler(srv.Handler(), &http2.Server{})
+
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.HTTPPort,
-		Handler:           srv.Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		// no WriteTimeout: long-lived websocket/xhttp tunnels must not be cut
 	}

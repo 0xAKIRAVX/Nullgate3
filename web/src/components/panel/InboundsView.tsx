@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Globe, Layers, Plus, ShieldCheck, Trash2, Waypoints } from "lucide-react";
+import { Globe, Layers, Plus, ShieldCheck, Trash2, TriangleAlert, Waypoints } from "lucide-react";
 import type { InboundInfo } from "@/lib/panel/types";
 import { api } from "@/lib/panel/api";
 import { Badge, Field, Modal, Spinner, useToast } from "./bits";
@@ -94,6 +94,14 @@ export default function InboundsView({
                 <Row k="پورت" v={ib.port ? String(ib.port) : "خودکار (TLS دامنه)"} mono />
                 {ib.sni ? <Row k="SNI" v={ib.sni} mono /> : null}
               </dl>
+              {ib.security === "reality" && ib.reachable === false && (
+                <div className="mt-3 rounded-lg border border-bad/30 bg-bad/8 p-2.5 text-[10.5px] leading-relaxed text-bad flex gap-2">
+                  <TriangleAlert className="size-4 shrink-0 mt-0.5" />
+                  <span>
+                    روی Railway بدون TCP Proxy از بیرون در دسترس نیست. یک TCP Proxy جدید روی پورت داخلی <b className="mono">{ib.port}</b> بسازید و متغیرهای <code className="mono">TCP2_HOST</code> / <code className="mono">TCP2_PORT</code> را با همان آدرس پر کنید.
+                  </span>
+                </div>
+              )}
             </div>
           ))}
           {data.custom.length === 0 && (
@@ -197,7 +205,9 @@ function CreateInboundModal({
           <>
             <div className="ng-card-gold p-3 text-[11px] text-gtx leading-relaxed flex gap-2">
               <ShieldCheck className="size-4 shrink-0 mt-0.5" />
-              Reality فقط با VLESS و ترنسپورت TCP/XHTTP/gRPC کار می‌کند. پورت عمومی Railway TCP Proxy را وارد کنید و SNI را خالی بگذارید تا از تنظیمات پنل ارث ببرد.
+              <span>
+                Reality فقط با VLESS و ترنسپورت TCP/XHTTP/gRPC کار می‌کند. عددی که در «پورت عمومی» می‌نویسید همان پورت داخلی Xray است؛ برای دسترسی از بیرون باید برایش یک TCP Proxy جدا بسازید و آدرسش را در <code className="mono">TCP2_HOST</code> / <code className="mono">TCP2_PORT</code> بگذارید. لینک‌ها خودکار درست می‌شوند.
+              </span>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="پورت عمومی" hint="۱۰۲۴ تا ۶۵۵۳۵ — بدون تداخل">

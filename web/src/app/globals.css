@@ -111,6 +111,17 @@ body {
   background-size: 200% 100%;
   animation: ng-shimmer 1.4s linear infinite;
 }
+@keyframes ng-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+.animate-float { animation: ng-float 5.5s ease-in-out infinite; }
+@keyframes ng-btn-sheen { from { transform: translateX(-130%) skewX(-18deg); } to { transform: translateX(240%) skewX(-18deg); } }
+.btn-sheen { position: relative; overflow: hidden; }
+.btn-sheen::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 34%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.34), transparent);
+  animation: ng-btn-sheen 3.2s ease-in-out infinite;
+}
+@keyframes ng-ring { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+.logo-ring { animation: ng-ring 4s ease-in-out infinite; }
 
 /* checkbox / switch accents */
 .ng-check { accent-color: #d9b44a; }
