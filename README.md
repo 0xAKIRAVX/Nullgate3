@@ -72,7 +72,9 @@
 6. **Generate Domain** (پورت `8080`) → پنل بالا می‌آید → اولین حساب مدیر را بسازید — تمام! 🎉
 
 <details>
-<summary><b>➕ اینباند Reality دوم (مثلاً Reality-gRPC) روی Railway</b></summary>
+<summary><b>➕ اینباند Reality دوم (مثلاً Reality-gRPC) روی سرور شخصی (VPS)</b></summary>
+
+> ⚠️ **روی Railway قابل انجام نیست** — Railway به هر سرویس فقط «یک» TCP Proxy اجازه می‌دهد. برای gRPC روی Railway از روش `REALITY_NET=grpc` در جدول پایین استفاده کنید.
 
 اینباند سفارشی بسازید (مثلاً پورت داخلی `9001`)، بعد یک **TCP Proxy دوم** روی همان پورت داخلی بسازید و آدرس عمومی‌اش را در متغیرهای زیر بگذارید:
 
@@ -97,6 +99,8 @@ TCP2_APP_PORT=9001                # پورت داخلی که پروکسی دوم
 | `REALITY_SNI` | `www.samsung.com` | SNI پیش‌فرض Reality |
 | `SESSION_HOURS` | `24` | عمر نشست ادمین |
 | `TCP_HOST` / `TCP_PORT` | — | آدرس عمومی TCP Proxy اصلی (Reality) |
+| `REALITY_NET` | `tcp` | ترنسپورت Reality داخلی: `tcp` یا `grpc` — روی Railway برای gRPC مقدار `grpc` بگذارید (لینک‌ها خودکار gun می‌شوند) |
+| `REALITY_GRPC_SERVICE` | `nullgate` | نام سرویس gRPC وقتی `REALITY_NET=grpc` است |
 | `TCP2_HOST` / `TCP2_PORT` | — | آدرس عمومی TCP Proxy دوم (اینباندهای سفارشی) |
 | `TCP2_APP_PORT` | `9001` | پورت داخلی مقصد TCP Proxy دوم |
 | `WS_PATH` | `/ws` | مسیر VLESS-WS |

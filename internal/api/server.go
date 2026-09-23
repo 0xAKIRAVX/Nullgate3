@@ -656,8 +656,16 @@ func (s *Server) returnClient(w http.ResponseWriter, r *http.Request, id string)
 // ───────────────────────── inbounds (read-only for now) ─────────────────────────
 
 func (s *Server) listInbounds(w http.ResponseWriter, r *http.Request) {
+        realityNet := s.Cfg.RealityNet
+        if realityNet != "grpc" {
+                realityNet = "tcp"
+        }
+        realityName := "Reality TCP"
+        if realityNet == "grpc" {
+                realityName = "Reality gRPC"
+        }
         builtins := []map[string]any{
-                {"tag": "vless-reality", "name": "Reality TCP", "protocol": "vless", "network": "tcp", "security": "reality", "port": s.Cfg.AppPort, "builtin": true},
+                {"tag": "vless-reality", "name": realityName, "protocol": "vless", "network": realityNet, "security": "reality", "port": s.Cfg.AppPort, "builtin": true},
                 {"tag": "vless-ws", "name": "VLESS WS", "protocol": "vless", "network": "ws", "security": "none", "path": s.Cfg.WSPath, "builtin": true},
                 {"tag": "vless-xhttp", "name": "VLESS XHTTP", "protocol": "vless", "network": "xhttp", "security": "none", "path": s.Cfg.XHTTPPath, "builtin": true},
                 {"tag": "vless-hu", "name": "VLESS HTTPUpgrade", "protocol": "vless", "network": "httpupgrade", "security": "none", "path": s.Cfg.HUPath, "builtin": true},
