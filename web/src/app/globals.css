@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+@theme {
+  /* NullGate black-gold palette (v2.x brand continuity) */
+  --color-ngbg: #0a0a0b;
+  --color-ink: #08080a;
+  --color-card: #151517;
+  --color-card2: #1a1a1d;
+  --color-line: #26262a;
+  --color-tx: #f2f2f4;
+  --color-mu: #9b9ba3;
+  --color-gold: #d9b44a;
+  --color-gold2: #f0d98c;
+  --color-goldd: #a87f1f;
+  --color-gtx: #e9cd7e;
+  --color-ok: #3ddc84;
+  --color-bad: #f87171;
+  --color-warn: #fbbf24;
+  --color-info: #5b8cff;
+  --color-purple: #a78bfa;
+  --color-cyan: #38bdf8;
+  --radius-ng: 14px;
+}
+
+:root {
+  --font-vazir: "Vazirmatn";
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-ngbg);
+  color: var(--color-tx);
+  font-family: var(--font-vazir), Tahoma, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── shared surfaces ─────────────────────────────── */
+.ng-card {
+  background: linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,.008));
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-ng);
+}
+.ng-card-gold {
+  background: linear-gradient(135deg, rgba(217,180,74,.10), rgba(217,180,74,.02) 55%);
+  border: 1px solid rgba(217,180,74,.25);
+  border-radius: var(--radius-ng);
+}
+.gold-text {
+  background: linear-gradient(180deg, #f0d98c, #c9992e);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.ng-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  border-radius: 12px; font-weight: 600; font-size: .875rem;
+  padding: .625rem 1.1rem; transition: all .18s ease; cursor: pointer;
+  border: 1px solid transparent; user-select: none; white-space: nowrap;
+}
+.ng-btn:active { transform: scale(.97); }
+.ng-btn:disabled { opacity: .5; cursor: not-allowed; }
+.ng-btn-gold {
+  background: linear-gradient(180deg, #e8c766, #c9992e);
+  color: #141005;
+  box-shadow: 0 6px 18px -6px rgba(217,180,74,.45);
+}
+.ng-btn-gold:hover { filter: brightness(1.08); }
+.ng-btn-ghost {
+  background: rgba(255,255,255,.04);
+  border-color: var(--color-line);
+  color: var(--color-tx);
+}
+.ng-btn-ghost:hover { background: rgba(255,255,255,.08); border-color: rgba(217,180,74,.35); }
+.ng-btn-danger {
+  background: rgba(248,113,113,.12);
+  border-color: rgba(248,113,113,.35);
+  color: #f87171;
+}
+.ng-btn-danger:hover { background: rgba(248,113,113,.2); }
+.ng-input {
+  width: 100%; background: rgba(255,255,255,.035);
+  border: 1px solid var(--color-line); border-radius: 12px;
+  padding: .65rem .9rem; font-size: .9rem; color: var(--color-tx);
+  outline: none; transition: border-color .15s ease, box-shadow .15s ease;
+}
+.ng-input:focus {
+  border-color: rgba(217,180,74,.55);
+  box-shadow: 0 0 0 3px rgba(217,180,74,.12);
+}
+.ng-input::placeholder { color: #5c5c64; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* ── scrollbar ───────────────────────────────────── */
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: #2c2c31; border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(217,180,74,.45); }
+
+/* ── animations ──────────────────────────────────── */
+@keyframes ng-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+.live-dot { animation: ng-pulse 1.6s ease-in-out infinite; }
+@keyframes ng-fade-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.fade-up { animation: ng-fade-up .35s ease both; }
+@keyframes ng-spin { to { transform: rotate(360deg); } }
+.spin { animation: ng-spin .9s linear infinite; }
+@keyframes ng-toast-in { from { opacity: 0; transform: translateY(-10px) scale(.97); } to { opacity: 1; transform: none; } }
+.toast-in { animation: ng-toast-in .25s ease both; }
+@keyframes ng-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.shimmer {
+  background: linear-gradient(90deg, rgba(255,255,255,.04) 25%, rgba(217,180,74,.14) 50%, rgba(255,255,255,.04) 75%);
+  background-size: 200% 100%;
+  animation: ng-shimmer 1.4s linear infinite;
+}
+
+/* checkbox / switch accents */
+.ng-check { accent-color: #d9b44a; }

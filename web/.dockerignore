@@ -1,0 +1,5 @@
+# ⚠️ bun.lock MUST stay in the context (frozen-lockfile install)
+node_modules
+.next
+README.md
+.git/

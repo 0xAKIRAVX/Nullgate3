@@ -1,0 +1,73 @@
+# NullGate 3.0 — local test stack (mirror of the Railway 4-service layout)
+#
+#   web (Next.js :3000)  →  api (Go + Xray :8080, Reality :9000)
+#        └──────────────────→  postgres :5432   redis :6379
+#
+# Run:    docker compose up --build
+# Panel:  http://localhost:3000   (first open → setup page → create admin)
+# Reality link address: 127.0.0.1:9000  (stands in for the Railway TCP Proxy)
+
+name: nullgate
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nullgate
+      POSTGRES_PASSWORD: nullgate
+      POSTGRES_DB: nullgate
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nullgate -d nullgate"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://nullgate:nullgate@postgres:5432/nullgate?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      # local-only conveniences — do NOT copy into production
+      SECRET: local-dev-secret-change-me
+      COOKIE_INSECURE: "1"          # panel is served over plain http here
+      REALITY_SNI: www.samsung.com
+      # local stand-in for the Railway TCP Proxy (host:port shown in links)
+      TCP_HOST: 127.0.0.1
+      TCP_PORT: "9000"
+      TCP_APP_PORT: "9000"          # Reality inbound port inside the container
+    ports:
+      - "8080:8080"                 # Go API (web proxies /api/* and /sub/* to it)
+      - "9000:9000"                 # Reality inbound — your local "TCP Proxy"
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      API_INTERNAL_URL: http://api:8080
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
