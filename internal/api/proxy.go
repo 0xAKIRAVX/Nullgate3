@@ -154,10 +154,22 @@ func (s *Server) lookupCustom(p string) *httputil.ReverseProxy {
 }
 
 func (s *Server) serveMuxWithCustoms(mux *http.ServeMux) http.Handler {
+        ui := s.uiHandler()
         return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
                 if rp := s.lookupCustom(r.URL.Path); rp != nil {
                         rp.ServeHTTP(w, r)
                         return
+                }
+                // UI fallback: when no API/sub/builtin route matches, serve the
+                // embedded panel UI (GET/HEAD only — the mux answers everything else).
+                // NOTE: the UI must NOT be registered on the mux as "GET /" — that
+                // pattern overlaps method-agnostic paths like "/ws" and panics the mux.
+                if _, pattern := mux.Handler(r); pattern == "" {
+                        switch r.Method {
+                        case http.MethodGet, http.MethodHead:
+                                ui.ServeHTTP(w, r)
+                                return
+                        }
                 }
                 mux.ServeHTTP(w, r)
         })

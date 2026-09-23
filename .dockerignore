@@ -1,6 +1,8 @@
-# keep the docker build context tiny — the web app is a separate service
-web/
+# keep the docker build context tiny
 e2e/
 *.md
 .git/
 .gitignore
+web/node_modules
+web/.next
+web/out

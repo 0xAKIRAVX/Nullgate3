@@ -1,16 +1,31 @@
-# NullGate 3.0 — api service (Go panel API + Xray engine)
+# NullGate 3.0 — api service (Go panel API + Xray engine + embedded web UI)
 # Railway: set Root Directory = / (repo root) for this service.
+# ONE service now serves everything same-origin: the panel UI, /api/*, /sub/*
+# and the Xray transport paths — no separate web service needed.
 
-# ───────────────────────── stage 1: build Go binary ─────────────────────────
+# ─────────────────── stage 1: build static web UI (Next.js export) ───────────────────
+FROM oven/bun:1 AS web
+WORKDIR /web
+COPY web/package.json web/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY web/ .
+# The in-repo demo route handlers are request-dependent and cannot be exported;
+# in production the Go api answers the very same same-origin /api/* and /sub/*.
+RUN rm -rf src/app/api src/app/sub
+ENV STATIC_EXPORT=1 NEXT_TELEMETRY_DISABLED=1
+RUN bun run build
+
+# ───────────────────────── stage 2: build Go binary + embed UI ─────────────────────────
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+COPY --from=web /web/out ./internal/webui/dist
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
 
-# ───────────────────── stage 2: runtime + pre-installed Xray ─────────────────
+# ───────────────────── stage 3: runtime + pre-installed Xray ─────────────────────
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata unzip wget
 
