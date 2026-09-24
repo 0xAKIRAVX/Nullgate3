@@ -3,12 +3,14 @@ package api
 import (
         "context"
         "crypto/tls"
+        "log"
         "net"
         "net/http"
         "net/http/httputil"
         "net/url"
         "strings"
         "sync"
+        "time"
 
         "golang.org/x/net/http2"
 )
@@ -89,7 +91,11 @@ func (s *Server) SyncCustomRoutes() {
         if s.customMu == nil || s.Pool == nil {
                 return
         }
-        rows, err := s.Pool.Query(context.Background(), `
+        // this runs inline from HTTP handlers — a hanging Postgres must not pin
+        // the admin request forever
+        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+        rows, err := s.Pool.Query(ctx, `
                 SELECT tag, path, network, COALESCE(lport,0) FROM inbounds WHERE security='tls'`)
         if err != nil {
                 return
@@ -105,6 +111,13 @@ func (s *Server) SyncCustomRoutes() {
                 if path == "" || lport == 0 {
                         continue
                 }
+                // DEFENSE IN DEPTH: a custom route is consulted before the mux, so a
+                // reserved/builtin path would swallow the panel (API included) — skip
+                // any row that collides (legacy rows created before validation).
+                if s.pathCollides(path) {
+                        log.Printf("proxy: skipping custom inbound %s — path %q collides with a reserved/builtin route", tag, path)
+                        continue
+                }
                 if rp := newProxy("127.0.0.1:"+itoa(lport), network); rp != nil {
                         next[path] = customRoute{path: path, rp: rp}
                 }
@@ -112,6 +125,22 @@ func (s *Server) SyncCustomRoutes() {
         s.customMu.Lock()
         s.customs = next
         s.customMu.Unlock()
+}
+
+// pathCollides reports whether a custom inbound path would shadow a reserved
+// panel prefix or one of the five builtin 443 paths.
+func (s *Server) pathCollides(p string) bool {
+        low := strings.ToLower(p)
+        if strings.HasPrefix(low, "/api") || strings.HasPrefix(low, "/sub") || strings.HasPrefix(low, "/panel") {
+                return true
+        }
+        switch low {
+        case strings.ToLower(s.Cfg.WSPath), strings.ToLower(s.Cfg.XHTTPPath),
+                strings.ToLower(s.Cfg.HUPath), strings.ToLower(s.Cfg.VmessPath),
+                strings.ToLower(s.Cfg.TrojanPath):
+                return true
+        }
+        return false
 }
 
 func itoa(n int) string {

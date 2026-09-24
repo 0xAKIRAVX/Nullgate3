@@ -6,7 +6,6 @@ import (
         "encoding/base64"
         "encoding/json"
         "errors"
-        "log"
         "net"
         "net/http"
         "regexp"
@@ -157,6 +156,8 @@ func (s *Server) clientConfig(w http.ResponseWriter, r *http.Request) {
                 TCPPort: o.TCPPort, WSPath: o.WSPath, XHTTPPath: o.XHTTPPath, HUPath: o.HUPath,
                 VmessPath: o.VmessPath, TrojanPath: o.TrojanPath, UserProtocols: c.Protocols,
                 RealityNet: o.RealityNet, RealitySvc: o.RealitySvc,
+                Customs: o.Customs,
+                TCP2Host: o.TCP2Host, TCP2Port: o.TCP2Port, TCP2AppPort: o.TCP2AppPort,
         }
         jo.Reality.Pub, jo.Reality.SID = o.Reality.Pub, o.Reality.SID
         cfg := xray.ClientJSON(jo)
@@ -343,7 +344,10 @@ func (s *Server) createInbound(w http.ResponseWriter, r *http.Request) {
                 return
         }
         var count int
-        _ = s.Pool.QueryRow(r.Context(), `SELECT count(*) FROM inbounds`).Scan(&count)
+        if err := s.Pool.QueryRow(r.Context(), `SELECT count(*) FROM inbounds`).Scan(&count); err != nil {
+                writeErr(w, 500, err.Error())
+                return
+        }
         if count >= 20 {
                 writeErr(w, 400, "حداکثر ۲۰ اینباند سفارشی مجاز است")
                 return
@@ -422,43 +426,59 @@ func (s *Server) createInbound(w http.ResponseWriter, r *http.Request) {
                         writeErr(w, 400, "هیچ پورت محلی آزادی باقی نمانده است")
                         return
                 }
-                if net != "tcp" {
-                        if net == "grpc" {
-                                svc := strings.Trim(strings.TrimSpace(body.Path), "/")
-                                if svc == "" {
-                                        svc = randTag()
-                                }
-                                if !svcRe.MatchString(svc) {
-                                        writeErr(w, 400, "Service name فقط حروف انگلیسی/عدد/خط تیره (۳ تا ۴۰ نویسه)")
-                                        return
-                                }
-                                ib.Path = "/" + svc
-                        } else {
-                                p := normPath(body.Path, "")
-                                if p == "" {
-                                        p = "/" + randTag()
-                                }
-                                if len(p) < 3 {
-                                        writeErr(w, 400, "مسیر نامعتبر است (حداقل ۲ نویسه؛ فقط حروف انگلیسی، عدد، - _ . /)")
-                                        return
-                                }
-                                low := strings.ToLower(p)
-                                if strings.HasPrefix(low, "/panel") || strings.HasPrefix(low, "/sub") || strings.HasPrefix(low, "/api") {
-                                        writeErr(w, 400, "این مسیر رزرو شده است")
-                                        return
-                                }
-                                used := map[string]bool{
-                                        strings.ToLower(s.Cfg.WSPath): true, strings.ToLower(s.Cfg.XHTTPPath): true,
-                                        strings.ToLower(s.Cfg.HUPath): true, strings.ToLower(s.Cfg.VmessPath): true,
-                                        strings.ToLower(s.Cfg.TrojanPath): true,
-                                }
-                                _ = s.Pool.QueryRow(ctx, `SELECT count(*) FROM inbounds WHERE security='tls' AND lower(path)=$1`, low).Scan(&count)
-                                if used[low] || count > 0 {
-                                        writeErr(w, 400, "این مسیر قبلاً استفاده شده است")
-                                        return
-                                }
-                                ib.Path = p
+                // path validation shared by ws/xhttp/httpupgrade AND gRPC: a custom
+                // route is consulted BEFORE the mux, so a colliding path (e.g. svc
+                // name "api" → /api) would swallow the whole panel — API included —
+                // and the DELETE needed to remove the inbound along with it.
+                checkPath := func(p string) bool {
+                        low := strings.ToLower(p)
+                        if strings.HasPrefix(low, "/panel") || strings.HasPrefix(low, "/sub") || strings.HasPrefix(low, "/api") {
+                                writeErr(w, 400, "این مسیر رزرو شده است")
+                                return false
                         }
+                        used := map[string]bool{
+                                strings.ToLower(s.Cfg.WSPath): true, strings.ToLower(s.Cfg.XHTTPPath): true,
+                                strings.ToLower(s.Cfg.HUPath): true, strings.ToLower(s.Cfg.VmessPath): true,
+                                strings.ToLower(s.Cfg.TrojanPath): true,
+                        }
+                        var n int
+                        if err := s.Pool.QueryRow(ctx,
+                                `SELECT count(*) FROM inbounds WHERE security='tls' AND lower(path)=$1`, low).Scan(&n); err != nil {
+                                writeErr(w, 500, err.Error())
+                                return false
+                        }
+                        if used[low] || n > 0 {
+                                writeErr(w, 400, "این مسیر قبلاً استفاده شده است")
+                                return false
+                        }
+                        return true
+                }
+                if net == "grpc" {
+                        svc := strings.Trim(strings.TrimSpace(body.Path), "/")
+                        if svc == "" {
+                                svc = randTag()
+                        }
+                        if !svcRe.MatchString(svc) {
+                                writeErr(w, 400, "Service name فقط حروف انگلیسی/عدد/خط تیره (۳ تا ۴۰ نویسه)")
+                                return
+                        }
+                        ib.Path = "/" + svc
+                        if !checkPath(ib.Path) {
+                                return
+                        }
+                } else {
+                        p := normPath(body.Path, "")
+                        if p == "" {
+                                p = "/" + randTag()
+                        }
+                        if len(p) < 3 {
+                                writeErr(w, 400, "مسیر نامعتبر است (حداقل ۲ نویسه؛ فقط حروف انگلیسی، عدد، - _ . /)")
+                                return
+                        }
+                        if !checkPath(p) {
+                                return
+                        }
+                        ib.Path = p
                 }
         }
 
@@ -481,10 +501,7 @@ func (s *Server) createInbound(w http.ResponseWriter, r *http.Request) {
                 return
         }
         s.SyncCustomRoutes()
-        if err := s.Sup.Restart(ctx, false); err != nil {
-                // surface the failure in the log; the watchdog/collector keeps retrying
-                log.Printf("inbound %s: xray restart: %v", ib.Tag, err)
-        }
+        s.restartXray()
         writeJSON(w, 200, map[string]any{"ok": true, "inbound": ib})
 }
 
@@ -501,9 +518,7 @@ func (s *Server) deleteInbound(w http.ResponseWriter, r *http.Request) {
                 return
         }
         s.SyncCustomRoutes()
-        if err := s.Sup.Restart(r.Context(), false); err != nil {
-                log.Printf("inbound %s delete: xray restart: %v", tag, err)
-        }
+        s.restartXray()
         writeJSON(w, 200, map[string]any{"ok": true})
 }
 

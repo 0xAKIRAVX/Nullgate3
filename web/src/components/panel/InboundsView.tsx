@@ -9,11 +9,16 @@ import { Badge, Field, Modal, Spinner, useToast } from "./bits";
 const NETS = ["ws", "xhttp", "httpupgrade", "grpc", "tcp"] as const;
 const PROTOS = ["vless", "vmess", "trojan"] as const;
 
+// Persian digits in the port field would otherwise fail Number() silently
+const toEnDigits = (s: string) =>
+  s.replace(/[۰-۹]/g, (x) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(x)))
+   .replace(/[٠-٩]/g, (x) => String("٠١٢٣٤٥٦٧٨٩".indexOf(x)));
+
 export default function InboundsView({
   data, reload,
 }: {
   data: { builtin: InboundInfo[]; custom: InboundInfo[] } | null;
-  reload: () => Promise<void>;
+  reload: () => Promise<unknown>;
 }) {
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -161,14 +166,17 @@ function CreateInboundModal({
       // client-side validation first — the old form sent port: 0 for a blank
       // Reality port (Number("") === 0) and only failed late with a server 400
       if (d.security === "reality") {
-        const p = Number(d.port);
+        const p = Number(toEnDigits(d.port.trim()));
         if (!d.port.trim() || !Number.isInteger(p) || p < 1024 || p > 65535) {
           toast("err", "پورت Reality باید عددی بین ۱۰۲۴ تا ۶۵۵۳۵ باشد");
           setBusy(false);
           return;
         }
-        if (d.network !== "vless") {
-          toast("err", "Reality فقط با پروتکل VLESS کار می‌کند");
+        // protocol vs network: this used to read d.network (the TRANSPORT select)
+        // — never equal to "vless" — so every Reality submission died before the
+        // request with a misleading error
+        if (d.protocol !== "vless" || !["tcp", "xhttp", "grpc"].includes(d.network)) {
+          toast("err", "Reality فقط با پروتکل VLESS و ترنسپورت TCP یا XHTTP یا gRPC کار می‌کند");
           setBusy(false);
           return;
         }
@@ -226,7 +234,7 @@ function CreateInboundModal({
             </div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="پورت عمومی" hint="۱۰۲۴ تا ۶۵۵۳۵ — بدون تداخل">
-                <input className="ng-input" dir="ltr" inputMode="numeric" placeholder="443" value={d.port} onChange={(e) => setD({ ...d, port: e.target.value })} />
+                <input className="ng-input" dir="ltr" inputMode="numeric" placeholder="8443" value={d.port} onChange={(e) => setD({ ...d, port: e.target.value })} />
               </Field>
               <Field label="SNI" hint="خالی = از تنظیمات پنل">
                 <input className="ng-input" dir="ltr" placeholder="www.samsung.com" value={d.sni} onChange={(e) => setD({ ...d, sni: e.target.value })} />

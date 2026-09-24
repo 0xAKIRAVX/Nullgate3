@@ -15,6 +15,14 @@ type ClientJSONOpts struct {
 
         WSPath, XHTTPPath, HUPath, VmessPath, TrojanPath string
         UserProtocols                                    []string
+
+        // Customs + TCP2 wiring: the full config must carry the SAME custom
+        // inbounds as the share links / subscription — it used to render only
+        // the builtin six, silently giving JSON users fewer outbounds.
+        Customs    []CustomInbound
+        TCP2Host   string
+        TCP2Port   string
+        TCP2AppPort int
 }
 
 // clientAllowed resolves the per-user protocol set.
@@ -48,11 +56,7 @@ func ClientJSON(o ClientJSONOpts) map[string]any {
                 return "alt-" + base
         }
 
-        sockopt := func() map[string]any {
-                // TCP_NODELAY removes Nagle latency, fast-open saves one RTT on the
-                // first request, keepalive keeps the tunnel through NAT windows
-                return map[string]any{"tcpNoDelay": true, "tcpFastOpen": true, "tcpKeepAliveIdle": 300}
-        }
+        sockopt := sockoptFn
 
         vlessOut := func(tag string, port int, stream map[string]any, flow string) map[string]any {
                 return map[string]any{"tag": tag, "protocol": "vless",
@@ -119,6 +123,18 @@ func ClientJSON(o ClientJSONOpts) map[string]any {
                         "streamSettings": tlsStreamWS("ws", o.TrojanPath, addr, []string{"http/1.1"}, sockopt()),
                         "mux":            map[string]any{"enabled": false, "concurrency": -1}})
         }
+        for _, ib := range o.Customs {
+                // same membership rule as BuildLinks: a non-empty per-user list
+                // must contain the inbound tag, or the outbound can never connect
+                if len(o.UserProtocols) > 0 && !containsString(o.UserProtocols, ib.Tag) {
+                        continue
+                }
+                ob := customOutbound(ib, o, nextTag(ib.Tag))
+                if ob == nil {
+                        continue // unreachable custom (e.g. Railway without a TCP Proxy)
+                }
+                outbounds = append(outbounds, ob)
+        }
         if len(outbounds) == 0 {
                 return map[string]any{"error": "no protocol enabled for this user"}
         }
@@ -151,6 +167,99 @@ func ClientJSON(o ClientJSONOpts) map[string]any {
                         {"type": "field", "domain": []string{"geosite:category-ir", "regexp:.*\\.ir$"}, "outboundTag": "direct"},
                         {"type": "field", "ip": []string{"geoip:ir", "geoip:private"}, "outboundTag": "direct"},
                 }},
+        }
+}
+
+// sockoptFn is the shared outbound socket tuning (TCP_NODELAY kills Nagle
+// latency, fast-open saves one RTT, keepalive survives idle NAT windows).
+func sockoptFn() map[string]any {
+        return map[string]any{"tcpNoDelay": true, "tcpFastOpen": true, "tcpKeepAliveIdle": 300}
+}
+
+// customOutbound renders one custom inbound as a full outbound — the JSON
+// twin of customLink. Returns nil when the inbound has no public endpoint.
+func customOutbound(ib CustomInbound, o ClientJSONOpts, tag string) map[string]any {
+        cid := o.ClientID
+        addr := o.Addr
+        mux := map[string]any{"enabled": false, "concurrency": -1}
+        if ib.Security == "reality" {
+                if o.Reality.Pub == "" {
+                        return nil
+                }
+                host, port, ok := resolveRealityEndpoint(ib, o.TCP2Host, o.TCP2Port, o.TCP2AppPort, o.TCPHost, o.TCPPort, o.Addr)
+                if !ok {
+                        return nil
+                }
+                stream := map[string]any{
+                        "security": "reality",
+                        "realitySettings": map[string]any{"show": false, "fingerprint": "chrome",
+                                "serverName": ib.SNI, "publicKey": o.Reality.Pub, "shortId": o.Reality.SID, "spiderX": "/"},
+                        "sockopt": sockoptFn(),
+                }
+                flow := ""
+                switch ib.Network {
+                case "tcp":
+                        flow = "xtls-rprx-vision" // vision is TCP-only
+                        stream["network"] = "tcp"
+                case "grpc":
+                        stream["network"] = "grpc"
+                        stream["grpcSettings"] = map[string]any{"serviceName": trimSlash(ib.Path)}
+                case "xhttp":
+                        stream["network"] = "xhttp"
+                        stream["xhttpSettings"] = map[string]any{"path": ib.Path, "host": ib.SNI, "mode": "packet-up"}
+                }
+                p := 443
+                if v := atoi(port); v > 0 {
+                        p = v
+                }
+                return map[string]any{"tag": tag, "protocol": "vless",
+                        "settings": map[string]any{"vnext": []map[string]any{{
+                                "address": host, "port": p,
+                                "users": []map[string]any{{"id": cid, "encryption": "none", "flow": flow, "level": 0}},
+                        }}},
+                        "streamSettings": stream, "mux": mux}
+        }
+
+        // TLS custom inbound behind the panel domain (port 443), like customLink
+        alpn := map[string]string{"ws": "http/1.1", "httpupgrade": "http/1.1", "xhttp": "h2,http/1.1", "grpc": "h2"}[ib.Network]
+        var stream map[string]any
+        switch ib.Network {
+        case "grpc":
+                stream = map[string]any{"network": "grpc", "security": "tls",
+                        "tlsSettings":    map[string]any{"serverName": addr, "fingerprint": "chrome", "alpn": []string{alpn}, "allowInsecure": false},
+                        "grpcSettings":   map[string]any{"serviceName": trimSlash(ib.Path)},
+                        "sockopt":         sockoptFn()}
+        case "httpupgrade":
+                stream = map[string]any{"network": "httpupgrade", "security": "tls",
+                        "tlsSettings":         map[string]any{"serverName": addr, "fingerprint": "chrome", "alpn": []string{alpn}, "allowInsecure": false},
+                        "httpupgradeSettings": map[string]any{"path": ib.Path, "host": addr},
+                        "sockopt":             sockoptFn()}
+        case "xhttp":
+                stream = map[string]any{"network": "xhttp", "security": "tls",
+                        "tlsSettings":   map[string]any{"serverName": addr, "fingerprint": "chrome", "alpn": []string{alpn}, "allowInsecure": false},
+                        "xhttpSettings": map[string]any{"path": ib.Path, "host": addr, "mode": "packet-up"},
+                        "sockopt":       sockoptFn()}
+        default: // ws
+                stream = map[string]any{"network": "ws", "security": "tls",
+                        "tlsSettings": map[string]any{"serverName": addr, "fingerprint": "chrome", "alpn": []string{alpn}, "allowInsecure": false},
+                        "wsSettings":   map[string]any{"path": ib.Path, "headers": map[string]string{"Host": addr}},
+                        "sockopt":       sockoptFn()}
+        }
+        switch ib.Protocol {
+        case "vmess":
+                return map[string]any{"tag": tag, "protocol": "vmess",
+                        "settings":       map[string]any{"vnext": []map[string]any{{"address": addr, "port": 443,
+                        "users": []map[string]any{{"id": cid, "alterId": 0, "security": "auto", "level": 0}}}}},
+                        "streamSettings": stream, "mux": mux}
+        case "trojan":
+                return map[string]any{"tag": tag, "protocol": "trojan",
+                        "settings":       map[string]any{"servers": []map[string]any{{"address": addr, "port": 443, "password": cid, "level": 0}}},
+                        "streamSettings": stream, "mux": mux}
+        default: // vless
+                return map[string]any{"tag": tag, "protocol": "vless",
+                        "settings":       map[string]any{"vnext": []map[string]any{{"address": addr, "port": 443,
+                        "users": []map[string]any{{"id": cid, "encryption": "none", "flow": "", "level": 0}}}}},
+                        "streamSettings": stream, "mux": mux}
         }
 }
 

@@ -73,7 +73,7 @@ func TestNullGateE2E(t *testing.T) {
         t.Setenv("PORT", "18080")
         t.Setenv("COOKIE_INSECURE", "1")
         os.MkdirAll("/tmp/ng-e2e-work", 0o755)
-	t.Setenv("NG_WORKDIR", "/tmp/ng-e2e-work")
+        t.Setenv("NG_WORKDIR", "/tmp/ng-e2e-work")
         t.Setenv("XRAY_BIN", xrayBin)
         t.Setenv("XRAY_VERSION", "v26.3.27")
         t.Setenv("TCP_APP_PORT", fmt.Sprint(appPort))
@@ -82,7 +82,7 @@ func TestNullGateE2E(t *testing.T) {
         t.Setenv("TCP_HOST", "127.0.0.1")
         t.Setenv("TCP_PORT", fmt.Sprint(appPort))
         t.Setenv("CORS_ORIGIN", "*")
-	t.Setenv("XRAY_LOGLEVEL", "info")
+        t.Setenv("XRAY_LOGLEVEL", "info")
 
         mr := miniredis.RunT(t)
         t.Setenv("REDIS_URL", "redis://"+mr.Addr())
@@ -137,7 +137,7 @@ func TestNullGateE2E(t *testing.T) {
         }
         go sup.Watchdog(ctx)
 
-        hub := api.NewHub()
+        hub := api.NewHub(cfg.CORSOrigin)
         live := &api.LiveCounters{}
         api.StartCollector(ctx, cfg, pool, sup, hub, live)
 

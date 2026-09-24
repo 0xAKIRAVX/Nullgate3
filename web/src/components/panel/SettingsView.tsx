@@ -13,7 +13,7 @@ export default function SettingsView({
   settings, reload,
 }: {
   settings: PanelSettings | null;
-  reload: () => Promise<void>;
+  reload: () => Promise<unknown>;
 }) {
   const toast = useToast();
   const [form, setForm] = useState<PanelSettings | null>(settings);

@@ -1,10 +1,12 @@
 package api
 
 import (
+        "context"
         "encoding/json"
         "errors"
         "log"
         "math"
+        "net"
         "net/http"
         "strings"
         "sync"
@@ -66,6 +68,7 @@ func (s *Server) Handler() http.Handler {
         mux.HandleFunc("PUT /api/settings", s.authed(s.putSettings))
         mux.HandleFunc("GET /api/clients", s.authed(s.listClients))
         mux.HandleFunc("POST /api/clients", s.authed(s.createClient))
+        mux.HandleFunc("GET /api/clients/{id}", s.authed(s.getClient))
         mux.HandleFunc("PATCH /api/clients/{id}", s.authed(s.patchClient))
         mux.HandleFunc("DELETE /api/clients/{id}", s.authed(s.deleteClient))
         mux.HandleFunc("GET /api/clients/{id}/links", s.authed(s.clientLinks))
@@ -203,16 +206,24 @@ func (s *Server) adminCount(r *http.Request) (int64, error) {
 func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
         n, err := s.adminCount(r)
         if err != nil {
-                writeErr(w, 500, err.Error())
+                writeInternal(w, "setup status", err)
                 return
         }
         writeJSON(w, 200, map[string]any{"needs_setup": n == 0})
 }
 
+// writeInternal logs the real error server-side and answers with a generic
+// 500 — pre-auth endpoints must not mirror Postgres driver/DSN internals to
+// anonymous callers.
+func writeInternal(w http.ResponseWriter, where string, err error) {
+        log.Printf("api: %s: %v", where, err)
+        writeErr(w, 500, "internal error")
+}
+
 func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
         n, err := s.adminCount(r)
         if err != nil {
-                writeErr(w, 500, err.Error())
+                writeInternal(w, "setup", err)
                 return
         }
         if n > 0 {
@@ -233,7 +244,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
         }
         hash, err := auth.HashPassword(body.Password)
         if err != nil {
-                writeErr(w, 500, err.Error())
+                writeInternal(w, "setup hash", err)
                 return
         }
         var id int64
@@ -248,7 +259,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
                         writeErr(w, http.StatusForbidden, "setup already completed")
                         return
                 }
-                writeErr(w, 500, err.Error())
+                writeInternal(w, "setup insert", err)
                 return
         }
         if err := s.startSession(w, r, id); err != nil {
@@ -285,7 +296,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
                         writeErr(w, 401, "wrong username or password")
                         return
                 }
-                writeErr(w, 500, err.Error())
+                writeInternal(w, "login", err)
                 return
         }
         if !auth.CheckPassword(hash, body.Password) {
@@ -305,7 +316,7 @@ var dummyBcryptHash, _ = auth.HashPassword("nullgate-timing-" + auth.RandomHex(8
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, adminID int64) error {
         tok, err := s.Auth.Create(r.Context(), adminID)
         if err != nil {
-                writeErr(w, 500, err.Error())
+                writeInternal(w, "session create", err)
                 return err
         }
         cookie := &http.Cookie{
@@ -503,13 +514,26 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
                 panel["protocols"] = merged
         }
         if v, ok := body["reality_sni"].(string); ok && strings.TrimSpace(v) != "" {
-                panel["reality_sni"] = strings.TrimSpace(v)
+                sni := strings.ToLower(strings.TrimSpace(v))
+                // reality_sni feeds dest/serverNames of the builtin REALITY inbound
+                // and every generated link — garbage here degrades the inbound and
+                // produces dead links until manually fixed
+                if !validPublicHost(sni) {
+                        writeErr(w, 400, "reality_sni باید دامنه یا IP معتبر باشد")
+                        return
+                }
+                panel["reality_sni"] = sni
         }
         if v, ok := body["cfg_fmt"].(string); ok {
                 panel["cfg_fmt"] = v
         }
         if v, ok := body["address"].(string); ok {
-                panel["address"] = v
+                addr := strings.TrimSpace(v)
+                if addr != "" && !validPublicHost(strings.ToLower(addr)) {
+                        writeErr(w, 400, "address باید دامنه یا IP معتبر باشد")
+                        return
+                }
+                panel["address"] = addr
         }
         if err := store.PutJSON(ctx, s.Pool, "panel", panel); err != nil {
                 writeErr(w, 500, err.Error())
@@ -517,12 +541,38 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
         }
         // protocol/SNI changes must reach the running Xray process; Restart's
         // fingerprint check makes this a no-op when nothing actually changed.
-        if s.Sup != nil {
-                if err := s.Sup.Restart(ctx, false); err != nil {
-                        log.Printf("settings: xray restart: %v", err)
-                }
-        }
+        s.restartXray()
         writeJSON(w, 200, panel)
+}
+
+// validPublicHost accepts a lowercase FQDN, an IPv4 or a bare/bracketed IPv6 —
+// the three legal shapes for a public address/SNI.
+func validPublicHost(v string) bool {
+        if v == "" {
+                return false
+        }
+        if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
+                v = v[1 : len(v)-1]
+        }
+        if net.ParseIP(v) != nil {
+                return true
+        }
+        return hostRe.MatchString(v)
+}
+
+// restartXray rebuilds + restarts Xray detached from the HTTP request
+// lifetime. If the admin's browser disconnects mid-request the rebuild must
+// still happen: the collector only re-syncs on user-ID-set changes, so
+// protocol/path/inbound changes would otherwise never be retried.
+func (s *Server) restartXray() {
+        if s.Sup == nil {
+                return
+        }
+        ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+        defer cancel()
+        if err := s.Sup.Restart(ctx, false); err != nil {
+                log.Printf("api: xray restart: %v", err)
+        }
 }
 
 // ───────────────────────── clients ─────────────────────────
@@ -561,6 +611,12 @@ func scanClient(row pgx.Row) (*clientRow, error) {
                 return nil, err
         }
         _ = json.Unmarshal(protoRaw, &c.Protocols)
+        // a NULL jsonb column (raw-API user created without protocols) would
+        // otherwise marshal back as JSON null and crash the panel's table —
+        // normalize to the empty slice, which means "follow global" everywhere.
+        if c.Protocols == nil {
+                c.Protocols = []string{}
+        }
         c.CreatedAt = created.UTC().Format(time.RFC3339)
         if expireAt.Year() > 1971 {
                 iso := expireAt.UTC().Format(time.RFC3339)
@@ -627,6 +683,16 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
                 writeErr(w, 400, "quota_gb must be between 0 and 1048576")
                 return
         }
+        // make_interval(days => $3) overflows timestamptz around ~2^31 days and
+        // makes Postgres 500 instead of rejecting the input — bound it (~100 years)
+        if body.ExpireDays < 0 || body.ExpireDays > 36500 {
+                writeErr(w, 400, "expire_days must be between 0 and 36500")
+                return
+        }
+        if !s.validProtocolTags(r.Context(), body.Protocols) {
+                writeErr(w, 400, "پروتکل نامعتبر است — فقط پروتکل‌های داخلی یا تگ اینباند سفارشی")
+                return
+        }
         protoRaw, _ := json.Marshal(body.Protocols)
         var expire interface{}
         if body.ExpireDays > 0 {
@@ -656,7 +722,40 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
         }
         _, _ = s.Pool.Exec(r.Context(),
                 `INSERT INTO client_usage(client_id) VALUES($1::uuid) ON CONFLICT DO NOTHING`, c.ID)
+        // make the new credentials live IMMEDIATELY — waiting for the collector's
+        // next sync (up to COLLECT_INTERVAL) handed the user dead links on connect
+        s.restartXray()
         writeJSON(w, 200, c)
+}
+
+// validProtocolTags accepts the six builtin protocol keys plus the tags of
+// existing custom inbounds (an unknown tag like "vless-relity" silently yields
+// a user with no credentials and an empty link list, so reject it up front).
+func (s *Server) validProtocolTags(ctx context.Context, protos []string) bool {
+        if len(protos) == 0 {
+                return true // nil/[] = follow global
+        }
+        known := map[string]bool{
+                "vless-reality": true, "vless-ws": true, "vless-xhttp": true,
+                "vless-hu": true, "vmess-ws": true, "trojan-ws": true,
+        }
+        rows, err := s.Pool.Query(ctx, `SELECT tag FROM inbounds`)
+        if err == nil {
+                defer rows.Close()
+                for rows.Next() {
+                        var tag string
+                        if rows.Scan(&tag) == nil {
+                                known[tag] = true
+                        }
+                }
+        }
+        for _, k := range protos {
+                k = strings.TrimSpace(k)
+                if k == "" || !known[k] {
+                        return false
+                }
+        }
+        return true
 }
 
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
@@ -678,6 +777,12 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
         var name, note, protoRaw interface{}
         if body.Name != nil {
                 name = strings.TrimSpace(*body.Name)
+                if name == "" {
+                        // COALESCE($2, name) with '' would blank the stored name —
+                        // createClient rejects empty, PATCH must stay consistent
+                        writeErr(w, 400, "name is required")
+                        return
+                }
         }
         if body.Note != nil {
                 note = *body.Note
@@ -693,6 +798,14 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
                         q = 0
                 }
                 quota = q
+        }
+        if body.ExpireDays != nil && (*body.ExpireDays < 0 || *body.ExpireDays > 36500) {
+                writeErr(w, 400, "expire_days must be between 0 and 36500")
+                return
+        }
+        if body.Protocols != nil && !s.validProtocolTags(r.Context(), body.Protocols) {
+                writeErr(w, 400, "پروتکل نامعتبر است — فقط پروتکل‌های داخلی یا تگ اینباند سفارشی")
+                return
         }
         if body.Protocols != nil {
                 raw, _ := json.Marshal(body.Protocols)
@@ -719,11 +832,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
         }
         // protocol/protocol-membership changes must reach the running Xray process
         // (Restart's fingerprint check keeps this a no-op when nothing changed).
-        if s.Sup != nil {
-                if err := s.Sup.Restart(r.Context(), false); err != nil {
-                        log.Printf("patch client: xray restart: %v", err)
-                }
-        }
+        s.restartXray()
         s.returnClient(w, r, id)
 }
 
@@ -742,7 +851,32 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
                 writeErr(w, 404, "client not found")
                 return
         }
+        // the deleted user's credentials must stop working IMMEDIATELY — the
+        // collector would otherwise leave the UUID valid for up to 30 more seconds
+        s.restartXray()
         writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// GET /api/clients/{id} — single client fetch (the route used to be missing:
+// the request fell through to the SPA fallback and returned HTML).
+func (s *Server) getClient(w http.ResponseWriter, r *http.Request) {
+        id := r.PathValue("id")
+        if _, err := uuid.Parse(id); err != nil {
+                writeErr(w, 400, "invalid client id")
+                return
+        }
+        row := s.Pool.QueryRow(r.Context(),
+                `SELECT `+clientCols+` `+clientFrom+` WHERE c.id = $1::uuid`, id)
+        c, err := scanClient(row)
+        if err != nil {
+                if errors.Is(err, pgx.ErrNoRows) {
+                        writeErr(w, 404, "client not found")
+                } else {
+                        writeErr(w, 500, err.Error())
+                }
+                return
+        }
+        writeJSON(w, 200, c)
 }
 
 func (s *Server) returnClient(w http.ResponseWriter, r *http.Request, id string) {

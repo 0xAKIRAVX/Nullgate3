@@ -1,6 +1,7 @@
 package config
 
 import (
+        "log"
         "net"
         "net/url"
         "os"
@@ -99,6 +100,20 @@ func defaultStr(v, d string) string {
         return d
 }
 
+// portOrEmpty validates a numeric public port (1–65535). A garbage TCP_PORT
+// (e.g. "abc") used to be emitted verbatim into links ("@host:abc") while
+// the client JSON fell back to 443 — divergent configs; ignore it instead.
+func portOrEmpty(v string) string {
+        if v == "" {
+                return ""
+        }
+        if n, err := strconv.Atoi(v); err != nil || n < 1 || n > 65535 {
+                log.Printf("config: ignoring invalid port %q", v)
+                return ""
+        }
+        return v
+}
+
 func Load() *Config {
         return &Config{
                 HTTPPort:     get("PORT", "8080"),
@@ -118,10 +133,10 @@ func Load() *Config {
                 TrojanPath: get("TROJAN_PATH", "/trojan"),
 
                 TCPHost:       get("TCP_HOST", get("RAILWAY_TCP_PROXY_DOMAIN", "")),
-                TCPPublicPort: get("TCP_PORT", get("RAILWAY_TCP_PROXY_PORT", "")),
+                TCPPublicPort: portOrEmpty(get("TCP_PORT", get("RAILWAY_TCP_PROXY_PORT", ""))),
 
                 TCP2Host:    get("TCP2_HOST", get("RAILWAY_TCP2_PROXY_DOMAIN", "")),
-                TCP2Port:    get("TCP2_PORT", get("RAILWAY_TCP2_PROXY_PORT", "")),
+                TCP2Port:    portOrEmpty(get("TCP2_PORT", get("RAILWAY_TCP2_PROXY_PORT", ""))),
                 TCP2AppPort: geti("TCP2_APP_PORT", 9001),
 
                 XrayBin:     get("XRAY_BIN", "./xray/xray"),

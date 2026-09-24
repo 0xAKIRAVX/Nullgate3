@@ -25,7 +25,7 @@ export interface ClientRow {
   name: string;
   quota: number; // bytes, 0 = unlimited
   expire_at: string | null; // RFC3339 or null
-  protocols: string[];
+  protocols: string[] | null; // null/[] = follow server defaults (Go may send null)
   note: string;
   sub_token: string;
   created_at: string;

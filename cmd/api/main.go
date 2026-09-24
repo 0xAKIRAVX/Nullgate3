@@ -123,7 +123,9 @@ func main() {
         signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
         <-sig
         log.Print("shutting down…")
-        sup.Stop() // persist handled by PersistUsage hook inside Restart; kill child now
+        // Stop() persists the last traffic counters via the PersistUsage hook
+        // before signalling the child — no usage is lost on redeploys
+        sup.Stop()
         sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
         defer cancel()
         _ = httpServer.Shutdown(sctx)

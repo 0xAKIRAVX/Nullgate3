@@ -93,6 +93,13 @@ export function useLive(initial: PanelState | null): LiveState {
       ws.onopen = () => {
         wsFail.current = 0;
         clearTimeout(failTimer);
+        // exactly ONE transport at a time: if the fallback poller was running
+        // (WS had failed earlier) it must stop now, or /api/state is fetched
+        // every 5s forever and the dashboard badge flaps ws↔poll indefinitely
+        if (poll) {
+          clearInterval(poll);
+          poll = null;
+        }
         setLive((s) => ({ ...s, mode: "ws" }));
       };
       ws.onmessage = (ev) => {

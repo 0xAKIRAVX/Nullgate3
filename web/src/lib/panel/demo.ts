@@ -159,7 +159,10 @@ export function buildLinks(c: DemoClient): { key: string; label: string; url: st
   const s = store();
   const host = s.panel.address || "nullgate-api.up.railway.app";
   const fmt = (label: string) => (s.panel.cfg_fmt || "{name}-{label}").replace("{name}", c.name).replace("{label}", label);
-  const b64u = (v: string) => Buffer.from(v).toString("base64url");
+  // standard PADDED base64 (not base64url) — the Go engine uses the same
+  // encoding, and atob() in linkHost/linkLabel cannot decode the unpadded
+  // url-safe alphabet, so demo VMess rows showed host "—"
+  const b64 = (v: string) => Buffer.from(v).toString("base64");
   const out: { key: string; label: string; url: string }[] = [];
   const push = (key: string, label: string, on: boolean, uri: string) => { if (on) out.push({ key, label, url: uri }); };
   const on = (k: string) => c.protocols.includes(k) && s.panel.protocols[k] !== false;
@@ -171,7 +174,7 @@ export function buildLinks(c: DemoClient): { key: string; label: string; url: st
   push("vless-hu", fmt("VLESS-HTTPUpgrade"), on("vless-hu"),
     `vless://${uid().slice(0, 8)}@${host}:443?type=httpupgrade&security=tls&path=%2Fhu&host=${encodeURIComponent(host)}#${encodeURIComponent(fmt("VLESS-HTTPUpgrade"))}`);
   push("vmess-ws", fmt("VMess-WS"), on("vmess-ws"),
-    `vmess://${b64u(JSON.stringify({ v: "2", ps: fmt("VMess-WS"), add: host, port: "443", id: uid(), aid: "0", scy: "auto", net: "ws", type: "none", host, path: "/vmess", tls: "tls", sni: host }))}`);
+    `vmess://${b64(JSON.stringify({ v: "2", ps: fmt("VMess-WS"), add: host, port: "443", id: uid(), aid: "0", scy: "auto", net: "ws", type: "none", host, path: "/vmess", tls: "tls", sni: host }))}`);
   push("trojan-ws", fmt("Trojan-WS"), on("trojan-ws"),
     `trojan://${tok().slice(0, 16)}@${host}:443?security=tls&type=ws&path=%2Ftrojan&sni=${encodeURIComponent(host)}#${encodeURIComponent(fmt("Trojan-WS"))}`);
   push("vless-reality", fmt("VLESS-Reality-TCP"), on("vless-reality"),

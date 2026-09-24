@@ -90,14 +90,36 @@ func NewSupervisor(cfg *config.Config, pool *pgxpool.Pool) *Supervisor {
 // ───────────────────────── binary provisioning ─────────────────────────
 
 func xrayAssetName() string {
-        switch runtime.GOARCH {
-        case "arm64":
-                return "Xray-linux-arm64-v8a.zip"
-        case "386":
-                return "Xray-linux-32.zip"
-        default:
-                return "Xray-linux-64.zip"
+        goos, arch := runtime.GOOS, runtime.GOARCH
+        name := "linux-64"
+        switch {
+        case goos == "darwin" && arch == "arm64":
+                name = "macos-arm64-v8a"
+        case goos == "darwin":
+                name = "macos-64"
+        case goos == "windows" && arch == "arm64":
+                name = "windows-arm64-v8a"
+        case goos == "windows" && arch == "386":
+                name = "windows-32"
+        case goos == "windows":
+                name = "windows-64"
+        case arch == "arm64":
+                name = "linux-arm64-v8a"
+        case arch == "386":
+                name = "linux-32"
+        case arch == "arm":
+                name = "linux-arm32-v7a"
         }
+        return "Xray-" + name + ".zip"
+}
+
+// binaryInZip is the executable name inside the release archive ("xray" on
+// unix, "xray.exe" on windows).
+func binaryInZip() string {
+        if runtime.GOOS == "windows" {
+                return "xray.exe"
+        }
+        return "xray"
 }
 
 // EnsureBinary downloads the pinned Xray release if the binary is missing.
@@ -135,13 +157,18 @@ func (s *Supervisor) EnsureBinary(ctx context.Context) error {
         }
         tmp.Close()
 
+        if err := verifyChecksum(ctx, client, url, tmp.Name()); err != nil {
+                return err
+        }
+
         zr, err := zip.OpenReader(tmp.Name())
         if err != nil {
                 return err
         }
         defer zr.Close()
+        binName := binaryInZip()
         for _, f := range zr.File {
-                if f.Name != "xray" {
+                if f.Name != binName {
                         continue
                 }
                 rc, err := f.Open()
@@ -175,6 +202,79 @@ func (s *Supervisor) EnsureBinary(ctx context.Context) error {
                 return nil
         }
         return fmt.Errorf("xray binary not found inside %s", xrayAssetName())
+}
+
+// verifyChecksum downloads the release .dgst manifest and compares the
+// SHA-256 of the downloaded archive against it. A mismatch (tampered or
+// corrupted download) is a hard error; a missing/unparseable manifest only
+// logs — the pinned version + HTTPS already carry most of the guarantee.
+func verifyChecksum(ctx context.Context, client *http.Client, assetURL, zipPath string) error {
+        dctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+        defer cancel()
+        req, err := http.NewRequestWithContext(dctx, http.MethodGet, assetURL+".dgst", nil)
+        if err != nil {
+                return nil
+        }
+        resp, err := client.Do(req)
+        if err != nil {
+                log.Printf("xray: dgst fetch failed (skipping verify): %v", err)
+                return nil
+        }
+        defer resp.Body.Close()
+        if resp.StatusCode != http.StatusOK {
+                log.Printf("xray: dgst status %d (skipping verify)", resp.StatusCode)
+                return nil
+        }
+        body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+        if err != nil {
+                return nil
+        }
+        want := parseSHA256(string(body))
+        if want == "" {
+                log.Println("xray: dgst carries no SHA-256 (skipping verify)")
+                return nil
+        }
+        f, err := os.Open(zipPath)
+        if err != nil {
+                return nil
+        }
+        defer f.Close()
+        h := sha256.New()
+        if _, err := io.Copy(h, f); err != nil {
+                return nil
+        }
+        got := hex.EncodeToString(h.Sum(nil))
+        if got != want {
+                return fmt.Errorf("xray archive checksum mismatch: got sha256 %s, want %s — refusing to extract", got, want)
+        }
+        return nil
+}
+
+// parseSHA256 extracts the expected digest from an XTLS .dgst manifest. Lines
+// carry one hash per algorithm (md5/sha1/sha256/…); take the 64-hex run from
+// the sha256 line.
+func parseSHA256(dgst string) string {
+        isHex := func(s string) bool {
+                for i := 0; i < len(s); i++ {
+                        c := s[i]
+                        if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+                                return false
+                        }
+                }
+                return true
+        }
+        for _, line := range strings.Split(dgst, "\n") {
+                low := strings.ToLower(line)
+                if !strings.Contains(low, "sha256") {
+                        continue
+                }
+                for i := 0; i+64 <= len(line); i++ {
+                        if isHex(line[i : i+64]) {
+                                return strings.ToLower(line[i : i+64])
+                        }
+                }
+        }
+        return ""
 }
 
 // ───────────────────────── process control ─────────────────────────
@@ -221,7 +321,14 @@ func (s *Supervisor) restartLocked(ctx context.Context, force bool) error {
         if err := os.MkdirAll(s.Cfg.WorkDir, 0o755); err != nil {
                 return err
         }
-        if err := os.WriteFile(s.confPath, raw, 0o600); err != nil {
+        // write-then-rename: a crash mid-write (disk full, OOM kill) used to leave a
+        // truncated xray.json that the next spawn chokes on exactly once
+        tmpConf := s.confPath + ".tmp"
+        if err := os.WriteFile(tmpConf, raw, 0o600); err != nil {
+                return err
+        }
+        if err := os.Rename(tmpConf, s.confPath); err != nil {
+                _ = os.Remove(tmpConf)
                 return err
         }
         s.stopLocked()
@@ -296,6 +403,17 @@ func (s *Supervisor) stopLocked() {
 func (s *Supervisor) Stop() {
         s.mu.Lock()
         defer s.mu.Unlock()
+        // persist the traffic counters one last time: Xray's stats are reset-on-read
+        // and only written to Postgres by the 30s collector tick — without this,
+        // every SIGTERM/redeploy silently dropped up to one interval of usage.
+        // (Safe under mu: the hook never re-enters Restart — it runs collectOnce
+        // with doSync=false, which only shells out and writes to Postgres.)
+        if s.PersistUsage != nil {
+                func() {
+                        defer func() { _ = recover() }()
+                        s.PersistUsage()
+                }()
+        }
         s.stopped.Store(true)
         s.stopLocked()
 }

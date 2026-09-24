@@ -27,12 +27,6 @@ func (l *LiveCounters) Store(up, down int64) {
         l.mu.Unlock()
 }
 
-func (l *LiveCounters) Snapshot() (int64, int64) {
-        l.mu.Lock()
-        defer l.mu.Unlock()
-        return l.up, l.down
-}
-
 // StartCollector runs the traffic loop: poll Xray's per-user counters (reset on
 // read), accumulate them into Postgres, broadcast live totals, and restart Xray
 // when the set of allowed users changed (limit hit, expiry, renewal) — the

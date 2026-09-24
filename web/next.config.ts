@@ -19,7 +19,10 @@ const API = process.env.API_INTERNAL_URL || "";
 const nextConfig: NextConfig = {
   ...(STATIC ? { output: "export" as const } : { output: "standalone" as const }),
   reactStrictMode: false,
-  typescript: { ignoreBuildErrors: true },
+  // type errors ARE build errors — the demo/panel drift bugs this round
+  // (wrong-variable checks, null protocols) were all silently shippable
+  // while this flag was true
+  typescript: { ignoreBuildErrors: false },
   images: { unoptimized: true },
   ...(API && !STATIC
     ? {

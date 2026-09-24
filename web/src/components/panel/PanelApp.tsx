@@ -5,7 +5,7 @@ import {
   Globe2, LayoutDashboard, LogOut, Menu, RefreshCcw, Settings, Users2, Waypoints, X,
 } from "lucide-react";
 import type { ClientRow, InboundInfo, PanelSettings, PanelState } from "@/lib/panel/types";
-import { api } from "@/lib/panel/api";
+import { api, isAuthError } from "@/lib/panel/api";
 import { useLive } from "@/lib/panel/useLive";
 import { Badge, Spinner, ToastHost, useToast } from "./bits";
 import LoginView from "./LoginView";
@@ -70,11 +70,6 @@ export default function PanelApp() {
   );
 }
 
-function isAuthError(e: unknown): boolean {
-  // api.req() maps 401 to this exact Persian message (before the body's error)
-  return e instanceof Error && e.message.includes("نشست منقضی");
-}
-
 function Inner() {
   const toast = useToast();
   const [boot, setBoot] = useState<Boot>({ phase: "loading" });
@@ -109,8 +104,9 @@ function Inner() {
     try { setSt(await api.state()); } catch { /* auth guard in boot */ }
   }, []);
 
-  const loadAll = useCallback(async () => {
+  const loadAll = useCallback(async (): Promise<number> => {
     setBusy(true);
+    let failed = 0;
     try {
       const [s, c, i, se] = await Promise.allSettled([api.state(), api.clients(), api.inbounds(), api.settings()]);
       // detect an expired session: every request 401s but allSettled swallows
@@ -118,12 +114,14 @@ function Inner() {
       // refresh button toasts success
       if (s.status === "rejected" && isAuthError(s.reason) && c.status === "rejected" && isAuthError(c.reason)) {
         setBoot({ phase: "login" });
-        return;
+        return -1; // session expired — already handled, no toast
       }
       if (s.status === "fulfilled") setSt(s.value);
       if (c.status === "fulfilled") setClients(c.value);
       if (i.status === "fulfilled") setInbounds(i.value);
       if (se.status === "fulfilled") setSettings(se.value);
+      failed = [s, c, i, se].filter((r) => r.status === "rejected").length;
+      return failed;
     } finally {
       setBusy(false);
     }
@@ -214,7 +212,12 @@ function Inner() {
           </Badge>
           <button
             className="p-2 rounded-lg hover:bg-white/5 text-mu hover:text-tx transition" title="بازخوانی داده‌ها" aria-label="بازخوانی"
-            onClick={async () => { await loadAll(); toast("ok", "داده‌ها بازخوانی شد"); }}
+            onClick={async () => {
+              const failed = await loadAll();
+              if (failed === -1) return; // session expired → login screen already shown
+              if (failed === 0) toast("ok", "داده‌ها بازخوانی شد");
+              else toast("err", `بازخوانی ناقص — ${failed.toLocaleString("fa-IR")} درخواست خطا داد`);
+            }}
           >
             <RefreshCcw className="size-4.5" />
           </button>
@@ -227,7 +230,7 @@ function Inner() {
           {view === "dashboard" && st ? (
             <DashboardView st={st} live={live} clients={clients} onGoUsers={() => setView("users")} />
           ) : null}
-          {view === "users" ? <UsersView clients={clients} reload={loadAll} busy={busy} /> : null}
+          {view === "users" ? <UsersView clients={clients} reload={loadAll} busy={busy} customs={inbounds?.custom ?? null} settings={settings} /> : null}
           {view === "inbounds" ? <InboundsView data={inbounds} reload={loadAll} /> : null}
           {view === "settings" ? <SettingsView settings={settings} reload={loadAll} /> : null}
           {!st && view === "dashboard" ? <div className="py-20 text-center"><Spinner className="size-7" /></div> : null}

@@ -90,12 +90,22 @@ func (o *LinkOpts) tcpReady() bool { return o.TCPHost != "" && o.TCPPort != "" &
 // ok=false → the inbound has no public path (Railway without a matching TCP
 // Proxy) and its link must NOT be generated (it would be dead on arrival).
 func (o *LinkOpts) realityEndpoint(ib CustomInbound) (host, port string, ok bool) {
-        if o.TCP2Host != "" && o.TCP2Port != "" && ib.Port == o.TCP2AppPort {
-                return o.TCP2Host, o.TCP2Port, true // mapped through the 2nd TCP Proxy
+        return resolveRealityEndpoint(ib, o.TCP2Host, o.TCP2Port, o.TCP2AppPort, o.TCPHost, o.TCPPort, o.Addr)
+}
+
+// resolveRealityEndpoint is the single resolver shared by links AND the full
+// client JSON, so the two can never diverge:
+//   - TCP2-mapped inbound (port == TCP2AppPort) → 2nd TCP Proxy host:port
+//   - no main TCP Proxy (VPS/direct mode) → the panel address + inbound port
+//   - Railway unmapped → not reachable (ok=false)
+func resolveRealityEndpoint(ib CustomInbound, tcp2Host, tcp2Port string, tcp2AppPort int,
+        tcpHost, tcpPort, addr string) (host, port string, ok bool) {
+        if tcp2Host != "" && tcp2Port != "" && ib.Port == tcp2AppPort {
+                return tcp2Host, tcp2Port, true // mapped through the 2nd TCP Proxy
         }
-        if o.TCPHost == "" || o.TCPPort == "" {
+        if tcpHost == "" || tcpPort == "" {
                 // VPS / direct mode: the inbound's own port is publicly reachable
-                return o.Addr, itoa(ib.Port), true
+                return addr, itoa(ib.Port), true
         }
         return "", "", false
 }

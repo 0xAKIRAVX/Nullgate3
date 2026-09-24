@@ -1,5 +1,9 @@
 // ── REST client — same-origin, cookie auth (ng_session) ────────────────
 
+export interface ApiError extends Error {
+  status?: number;
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     credentials: "include",
@@ -13,12 +17,23 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     /* non-json (downloads etc.) */
   }
   if (!res.ok) {
+    // keep the server's specific message when present, but ALWAYS tag the
+    // status — isAuthError() must key on the status code, never on the
+    // message ("unauthorized" used to mask the session-expiry path).
+    const bodyMsg = (body as { error?: string } | null)?.error?.trim();
     const msg =
-      (body as { error?: string } | null)?.error ||
-      (res.status === 401 ? "نشست منقضی شده — دوباره وارد شوید" : `خطای ${res.status}`);
-    throw new Error(msg);
+      bodyMsg || (res.status === 401 ? "نشست منقضی شده — دوباره وارد شوید" : `خطای ${res.status}`);
+    throw Object.assign(new Error(msg), { status: res.status }) as ApiError;
   }
   return body as T;
+}
+
+/** 401 from the API = the session cookie is gone/expired → back to login */
+export function isAuthError(e: unknown): boolean {
+  if (e && typeof e === "object" && "status" in e) {
+    return (e as { status?: number }).status === 401;
+  }
+  return e instanceof Error && e.message.includes("نشست منقضی");
 }
 
 export const api = {
@@ -35,7 +50,7 @@ export const api = {
   putSettings: (p: Partial<import("./types").PanelSettings>) =>
     req<import("./types").PanelSettings>("/api/settings", { method: "PUT", body: JSON.stringify(p) }),
   clients: () => req<import("./types").ClientRow[]>("/api/clients"),
-  createClient: (b: { name: string; quota_gb: number; expire_days: number; protocols: string[]; note: string }) =>
+  createClient: (b: { name: string; quota_gb: number; expire_days?: number; protocols?: string[]; note: string }) =>
     req<import("./types").ClientRow>("/api/clients", { method: "POST", body: JSON.stringify(b) }),
   patchClient: (id: string, b: Partial<{ name: string; quota_gb: number; expire_days: number; protocols: string[]; note: string }>) =>
     req<import("./types").ClientRow>(`/api/clients/${id}`, { method: "PATCH", body: JSON.stringify(b) }),

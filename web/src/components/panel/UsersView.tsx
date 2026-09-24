@@ -3,9 +3,9 @@
 import { useMemo, useRef, useState } from "react";
 import {
   BadgeCheck, CalendarClock, Download, Infinity as InfinityIcon, Link2, Pencil,
-  Plus, QrCode, Search, Trash2, UserRoundPlus,
+  Plus, QrCode, Search, Trash2, UserRoundPlus, Waypoints,
 } from "lucide-react";
-import type { ClientRow, ProtocolKey, ShareLink } from "@/lib/panel/types";
+import type { ClientRow, InboundInfo, PanelSettings, ProtocolKey, ShareLink } from "@/lib/panel/types";
 import { PROTOCOL_KEYS, PROTOCOL_LABELS } from "@/lib/panel/types";
 import { api, downloadClientJSON, subURL } from "@/lib/panel/api";
 import { bytesFmt, expireLabel, jalali, linkHost, linkLabel, pct } from "@/lib/panel/format";
@@ -14,19 +14,38 @@ import { Badge, CopyBtn, Field, Modal, QRImage, Spinner, useToast } from "./bits
 type Draft = {
   name: string; quota_gb: string; expire_days: string; note: string;
   protocols: Record<string, boolean>;
+  protoMode: "default" | "custom";
 };
 
 const emptyDraft = (): Draft => ({
   name: "", quota_gb: "", expire_days: "", note: "",
+  protoMode: "default",
   protocols: Object.fromEntries(PROTOCOL_KEYS.map((k) => [k, true])),
 });
 
+// Persian (۰-۹) and Arabic-Indic (٠-٩) digits → ASCII: Number() rejects them,
+// so "۵۰" in the quota field used to become NaN → 0 (= unlimited) and "۳۰"
+// days used to silently WIPE the expiry on edit.
+const toEnDigits = (s: string) =>
+  s.replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))
+   .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)));
+
+/** "۵۰" | "50" | "50.5" → 50 | 50.5; "" → null (blank); garbage → null */
+const parseNum = (s: string): number | null => {
+  const t = toEnDigits(s.trim()).replace(/,/g, "");
+  if (t === "") return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+};
+
 export default function UsersView({
-  clients, reload, busy,
+  clients, reload, busy, customs, settings,
 }: {
   clients: ClientRow[];
-  reload: () => Promise<void>;
+  reload: () => Promise<unknown>;
   busy: boolean;
+  customs: InboundInfo[] | null;
+  settings: PanelSettings | null;
 }) {
   const toast = useToast();
   const [q, setQ] = useState("");
@@ -164,18 +183,25 @@ export default function UsersView({
                         <div className={`text-[10px] ${c.status === "expired" ? "text-bad" : "text-mu"}`}>{expireLabel(c.expire_at)}</div>
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-1 max-w-[150px]">
-                          {c.protocols.slice(0, 3).map((pk) => (
-                            <span key={pk} className="rounded-md bg-white/5 border border-line px-1.5 py-0.5 text-[9.5px] text-mu" dir="ltr">
-                              {pk.replace("vless-", "")}
-                            </span>
-                          ))}
-                          {c.protocols.length > 3 && (
-                            <span className="rounded-md bg-gold/10 border border-gold/25 px-1.5 py-0.5 text-[9.5px] text-gtx">
-                              +{(c.protocols.length - 3).toLocaleString("fa-IR")}
-                            </span>
-                          )}
-                        </div>
+                        {/* null/[] = follows the server's global protocols (incl. ALL
+                            custom inbounds) — showing "no chips" here used to
+                            trick admins into thinking the user had nothing enabled */}
+                        {(c.protocols ?? []).length === 0 ? (
+                          <span className="rounded-md bg-gold/10 border border-gold/25 px-1.5 py-0.5 text-[9.5px] text-gtx">پیش‌فرض سرور</span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1 max-w-[150px]">
+                            {(c.protocols ?? []).slice(0, 3).map((pk) => (
+                              <span key={pk} className="rounded-md bg-white/5 border border-line px-1.5 py-0.5 text-[9.5px] text-mu" dir="ltr">
+                                {protoChipLabel(pk, customs)}
+                              </span>
+                            ))}
+                            {(c.protocols ?? []).length > 3 && (
+                              <span className="rounded-md bg-gold/10 border border-gold/25 px-1.5 py-0.5 text-[9.5px] text-gtx">
+                                +{((c.protocols ?? []).length - 3).toLocaleString("fa-IR")}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1.5">
@@ -197,6 +223,8 @@ export default function UsersView({
       <UserFormModal
         open={form.open}
         edit={form.edit}
+        customs={customs}
+        globalOn={settings?.protocols ?? null}
         onClose={() => setForm({ open: false, edit: null })}
         onSaved={async (msg) => { setForm({ open: false, edit: null }); toast("ok", msg); await reload(); }}
       />
@@ -274,10 +302,23 @@ function IconBtn({ children, title, onClick, danger }: { children: React.ReactNo
   );
 }
 
+/** table-chip label: builtin protocol keys shorten; custom inbound tags show
+ *  the inbound's display name (falling back to the raw tag) */
+function protoChipLabel(pk: string, customs: InboundInfo[] | null): string {
+  if ((PROTOCOL_KEYS as readonly string[]).includes(pk)) {
+    return pk.replace("vless-", "");
+  }
+  const ib = customs?.find((c) => c.tag === pk);
+  return ib?.name ?? pk;
+}
+
 function UserFormModal({
-  open, edit, onClose, onSaved,
+  open, edit, customs, globalOn, onClose, onSaved,
 }: {
-  open: boolean; edit: ClientRow | null; onClose: () => void; onSaved: (msg: string) => Promise<void>;
+  open: boolean; edit: ClientRow | null;
+  customs: InboundInfo[] | null;
+  globalOn: Record<string, boolean> | null;
+  onClose: () => void; onSaved: (msg: string) => Promise<void>;
 }) {
   const toast = useToast();
   const [d, setD] = useState<Draft>(emptyDraft);
@@ -289,38 +330,80 @@ function UserFormModal({
   if (key !== initial) {
     setInitial(key);
     if (open) {
+      const saved = edit?.protocols ?? [];
       setD(edit ? {
         name: edit.name, quota_gb: edit.quota ? String(Math.round((edit.quota / (1 << 30)) * 100) / 100) : "", expire_days: "", note: edit.note ?? "",
-        protocols: Object.fromEntries(PROTOCOL_KEYS.map((k) => [k, edit.protocols.includes(k)])),
+        // [] = "follow server defaults" — offer that mode explicitly instead of
+        // showing an all-unchecked form that SAVES the opposite of what it shows
+        protoMode: saved.length === 0 ? "default" : "custom",
+        protocols: Object.fromEntries([
+          ...PROTOCOL_KEYS.map((k) => [k, saved.includes(k)]),
+          ...(customs ?? []).map((ib) => [ib.tag, saved.includes(ib.tag)]),
+        ]),
       } : emptyDraft());
     }
   }
 
   const submit = async () => {
+    // numeric parse FIRST: Persian digits (۵۰/۳۰) used to become NaN → 0, which
+    // meant unlimited quota and a silently WIPED expiry on edit
+    const q = parseNum(d.quota_gb);
+    if (q === null && d.quota_gb.trim() !== "") {
+      toast("err", "سقف حجم باید عدد باشد (مثلاً 50 یا ۵۰)");
+      return;
+    }
+    if (q !== null && (q < 0 || q > 1048576)) {
+      toast("err", "سقف حجم باید بین 0 تا 1048576 گیگابایت باشد");
+      return;
+    }
+    const ed = parseNum(d.expire_days);
+    if (ed === null && d.expire_days.trim() !== "") {
+      toast("err", "روزهای انقضا باید عدد صحیح باشد (مثلاً 30 یا ۳۰)");
+      return;
+    }
+    if (ed !== null && (!Number.isInteger(ed) || ed < 0 || ed > 36500)) {
+      toast("err", "روزهای انقضا باید عدد صحیح بین 0 تا 36500 باشد");
+      return;
+    }
+
     setBusy(true);
     const body: {
       name: string; quota_gb: number; expire_days?: number;
-      protocols: string[]; note: string;
+      protocols?: string[]; note: string;
     } = {
       name: d.name.trim(),
       // quota 0 == unlimited is explicit user intent (prefilled with the
       // current quota, blanking it means "make unlimited")
-      quota_gb: Number(d.quota_gb) || 0,
-      protocols: PROTOCOL_KEYS.filter((k) => d.protocols[k]),
+      quota_gb: q ?? 0,
       note: d.note.trim(),
     };
+    if (d.protoMode === "custom") {
+      const sel = [
+        ...PROTOCOL_KEYS.filter((k) => d.protocols[k]),
+        ...(customs ?? []).map((ib) => ib.tag).filter((t) => d.protocols[t]),
+      ];
+      if (sel.length === 0) {
+        // an empty list means "follow global" on the server — the exact OPPOSITE
+        // of the all-unchecked UI, so block it instead of saving a lie
+        toast("err", "حداقل یک پروتکل انتخاب کنید — یا حالت «پیش‌فرض سرور» را برگردانید");
+        setBusy(false);
+        return;
+      }
+      body.protocols = sel;
+    }
+    // "default" mode omits protocols entirely → null → follow global
     if (!edit || d.expire_days.trim() !== "") {
       // CRITICAL: in edit mode a blank expire field means "keep the current
       // expiry" — sending 0 here used to silently NULL expire_at on every
       // rename/note save (the Go handler treats <= 0 as "clear").
-      body.expire_days = Number(d.expire_days) || 0;
+      body.expire_days = ed ?? 0;
     }
     try {
       if (edit) {
         await api.patchClient(edit.id, body);
         await onSaved(`کاربر «${body.name}» به‌روزرسانی شد`);
       } else {
-        await api.createClient({ ...body, expire_days: Number(d.expire_days) || 0 });
+        await api.createClient(body);
         await onSaved(`کاربر «${body.name}» ساخته شد`);
       }
     } catch (e) {
@@ -349,14 +432,60 @@ function UserFormModal({
         </Field>
         <div>
           <p className="text-xs text-mu font-medium mb-2 flex items-center gap-1.5"><BadgeCheck className="size-3.5" /> پروتکل‌های این کاربر</p>
-          <div className="grid grid-cols-2 gap-2">
-            {PROTOCOL_KEYS.map((k) => (
-              <label key={k} className="flex items-center gap-2 rounded-xl border border-line bg-white/[.03] px-3 py-2.5 cursor-pointer hover:border-gold/30 transition">
-                <input type="checkbox" className="ng-check size-4" checked={d.protocols[k]} onChange={(e) => setD({ ...d, protocols: { ...d.protocols, [k]: e.target.checked } })} />
-                <span className="text-[12px] font-medium">{PROTOCOL_LABELS[k]}</span>
-              </label>
-            ))}
+          <div className="grid grid-cols-2 gap-2 mb-2.5">
+            <button
+              type="button"
+              onClick={() => setD({ ...d, protoMode: "default" })}
+              className={`rounded-xl border px-3 py-2 text-[12px] font-medium transition ${
+                d.protoMode === "default"
+                  ? "border-gold/40 bg-gold/10 text-gtx"
+                  : "border-line bg-white/[.03] text-mu hover:border-gold/25"
+              }`}
+            >
+              پیش‌فرض سرور
+              <span className="block text-[9.5px] font-normal opacity-70 mt-0.5">
+                {globalOn
+                  ? `${Object.values(globalOn).filter(Boolean).length.toLocaleString("fa-IR")} پروتکل فعال + همه اینباندهای سفارشی`
+                  : "همه پروتکل‌های فعال سرور"}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setD({ ...d, protoMode: "custom" })}
+              className={`rounded-xl border px-3 py-2 text-[12px] font-medium transition ${
+                d.protoMode === "custom"
+                  ? "border-gold/40 bg-gold/10 text-gtx"
+                  : "border-line bg-white/[.03] text-mu hover:border-gold/25"
+              }`}
+            >
+              انتخاب دستی
+              <span className="block text-[9.5px] font-normal opacity-70 mt-0.5">فقط پروتکل‌های تیک‌خورده</span>
+            </button>
           </div>
+          {d.protoMode === "custom" ? (
+            <div className="grid grid-cols-2 gap-2">
+              {PROTOCOL_KEYS.map((k) => (
+                <label key={k} className="flex items-center gap-2 rounded-xl border border-line bg-white/[.03] px-3 py-2.5 cursor-pointer hover:border-gold/30 transition">
+                  <input type="checkbox" className="ng-check size-4" checked={!!d.protocols[k]} onChange={(e) => setD({ ...d, protocols: { ...d.protocols, [k]: e.target.checked } })} />
+                  <span className="text-[12px] font-medium">{PROTOCOL_LABELS[k]}</span>
+                </label>
+              ))}
+              {(customs ?? []).map((ib) => (
+                <label key={ib.tag} className="flex items-center gap-2 rounded-xl border border-line bg-white/[.03] px-3 py-2.5 cursor-pointer hover:border-gold/30 transition">
+                  <input type="checkbox" className="ng-check size-4" checked={!!d.protocols[ib.tag]} onChange={(e) => setD({ ...d, protocols: { ...d.protocols, [ib.tag]: e.target.checked } })} />
+                  <span className="text-[12px] font-medium flex items-center gap-1.5 min-w-0">
+                    <Waypoints className="size-3.5 shrink-0 text-mu/70" />
+                    <span className="truncate">{ib.name}</span>
+                    <span className="text-[9px] text-mu/60 shrink-0" dir="ltr">{ib.protocol}/{ib.network}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[10.5px] text-mu leading-relaxed bg-white/[.02] border border-line rounded-xl px-3 py-2.5">
+              این کاربر از تنظیمات کلی سرور پیروی می‌کند؛ هر تغییری در تنظیمات پروتکل‌ها یا اینباندهای سفارشی، بی‌درنگ روی او هم اعمال می‌شود.
+            </p>
+          )}
         </div>
         <div className="flex gap-2.5 justify-end pt-1">
           <button className="ng-btn ng-btn-ghost" onClick={onClose} type="button">انصراف</button>

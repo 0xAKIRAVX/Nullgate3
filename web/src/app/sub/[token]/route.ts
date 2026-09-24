@@ -6,7 +6,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ token: string }
   const c = store().clients.find((x) => x.sub_token === token);
   if (!c) return new Response("not found", { status: 404 });
   const links = buildLinks(c);
-  const body = Buffer.from(links.join("\n"), "utf8").toString("base64");
+  // join the link URLS — joining the {key,label,url} objects used to produce
+  // base64("[object Object]\n[object Object]…") which no client could import
+  const body = Buffer.from(links.map((l) => l.url).join("\n"), "utf8").toString("base64");
   const info = [`upload=${c.up}`, `download=${c.down}`];
   if (c.quota > 0) info.push(`total=${c.quota}`);
   if (c.expire_at) info.push(`expire=${Math.floor(new Date(c.expire_at).getTime() / 1000)}`);
