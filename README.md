@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="web/public/nullgate-logo.svg" width="110" alt="NullGate"/>
+<img src="web/public/nullgate-logo-full.png" width="330" alt="NullGate 3.0"/>
 
 # ⚡ NullGate 3.0
 

@@ -16,7 +16,7 @@ const vazir = localFont({
 export const metadata: Metadata = {
   title: "NullGate 3.0 — پنل مدیریت",
   description: "پنل مدیریت پروکسی NullGate — نسخه ۳ با Next.js + Go + PostgreSQL",
-  icons: { icon: { url: "/nullgate-logo.svg", type: "image/svg+xml" } },
+  icons: { icon: { url: "/favicon.png", type: "image/png", sizes: "128x128" } },
 };
 
 export const viewport: Viewport = {

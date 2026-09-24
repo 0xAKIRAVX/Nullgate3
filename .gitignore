@@ -5,3 +5,4 @@ out/
 .DS_Store
 internal/webui/dist/*
 !internal/webui/dist/.gitkeep
+web/tsconfig.tsbuildinfo
