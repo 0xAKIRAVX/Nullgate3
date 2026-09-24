@@ -1,11 +1,15 @@
-# NullGate 3.0 — local test stack (mirror of the Railway 4-service layout)
+# NullGate 3.0 — local test stack (single service, mirrors the Railway deploy)
 #
-#   web (Next.js :3000)  →  api (Go + Xray :8080, Reality :9000)
-#        └──────────────────→  postgres :5432   redis :6379
+#   api (Go + Xray + embedded panel UI :8080, Reality :9000)
+#        └──→  postgres :5432   redis :6379
 #
 # Run:    docker compose up --build
-# Panel:  http://localhost:3000   (first open → setup page → create admin)
+# Panel:  http://localhost:8080   (first open → setup page → create admin)
 # Reality link address: 127.0.0.1:9000  (stands in for the Railway TCP Proxy)
+#
+# Zero manual variables in production too — see RAILWAY_GUIDE.md:
+# on Railway, DATABASE_URL/PG* arrive via the UI "Connect" button and
+# RAILWAY_TCP_PROXY_* / RAILWAY_TCP_APPLICATION_PORT are auto-injected.
 
 name: nullgate
 
@@ -46,28 +50,14 @@ services:
       PORT: "8080"
       DATABASE_URL: postgres://nullgate:nullgate@postgres:5432/nullgate?sslmode=disable
       REDIS_URL: redis://redis:6379
-      # local-only conveniences — do NOT copy into production
-      SECRET: local-dev-secret-change-me
       COOKIE_INSECURE: "1"          # panel is served over plain http here
-      REALITY_SNI: www.samsung.com
       # local stand-in for the Railway TCP Proxy (host:port shown in links)
       TCP_HOST: 127.0.0.1
       TCP_PORT: "9000"
       TCP_APP_PORT: "9000"          # Reality inbound port inside the container
     ports:
-      - "8080:8080"                 # Go API (web proxies /api/* and /sub/* to it)
+      - "8080:8080"                 # panel + API (UI is embedded in the binary)
       - "9000:9000"                 # Reality inbound — your local "TCP Proxy"
-
-  web:
-    build: ./web
-    restart: unless-stopped
-    depends_on:
-      - api
-    environment:
-      API_INTERNAL_URL: http://api:8080
-      PORT: "3000"
-    ports:
-      - "3000:3000"
 
 volumes:
   pgdata:

@@ -60,21 +60,24 @@ docker compose up --build
 
 ## متغیرهای محیطی سرویس api
 
+> روی Railway همه‌ی موارد الزامی خودکار تزریق می‌شوند (Connect دیتابیس + TCP Proxy) — هیچ‌چیز را دستی تایپ نکن. جدول فقط برای شخصی‌سازی است.
+
 | متغیر | پیش‌فرض | توضیح |
 |---|---|---|
 | `PORT` | `8080` | پورت HTTP داخلی |
-| `DATABASE_URL` | — (الزامی) | رشته اتصال PostgreSQL |
+| `DATABASE_URL` | — (الزامی) | رشته اتصال PostgreSQL؛ در غیاب آن از `PG*` خودکار ساخته می‌شود |
 | `REDIS_URL` | — | اختیاری؛ نبودن → جلسه در حافظه |
-| `SECRET` | — | امضای توکن اشتراک |
 | `REALITY_SNI` | `www.samsung.com` | دامنه پوشاننده Reality |
-| `TCP_APP_PORT` | `9000` | پورت inbound Reality داخل کانتینر (هدف TCP Proxy) |
-| `TCP_HOST` / `TCP_PORT` | — | دامنه/پورت عمومی TCP Proxy (در لینک‌ها ظاهر می‌شود) |
+| `TCP_APP_PORT` | `9000` | پورت inbound Reality داخل کانتینر (هدف TCP Proxy؛ روی Railway با `RAILWAY_TCP_APPLICATION_PORT` همگام است) |
+| `TCP_HOST` / `TCP_PORT` | — | override دستی آدرس عمومی TCP Proxy — در غیاب آن از `RAILWAY_TCP_PROXY_*` خودکار خوانده می‌شود |
 | `XRAY_BIN` | `/app/xray/xray` | مسیر باینری Xray (در داکر پیش‌نصب است) |
 | `XRAY_VERSION` | `v26.3.27` | نسخه پین‌شده Xray-core |
 | `COLLECT_INTERVAL` | `30` | فاصله جمع‌آوری آمار (ثانیه) |
 | `COOKIE_INSECURE` | خالی | فقط تست محلی http |
 
-## متغیرهای سرویس web
+## متغیرهای سرویس web (فقط حالت اختیاری چند-سرویسی)
+
+> حالت پیش‌فرض و پیشنهادی **تک‌سرویسی** است: UI داخل باینری api جاسازی می‌شود و سرویس web اصلاً لازم نیست. جدول زیر فقط برای دیپلوی جداگانه‌ی فرانت است.
 
 | متغیر | توضیح |
 |---|---|

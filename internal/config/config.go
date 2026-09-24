@@ -1,17 +1,21 @@
 package config
 
 import (
+        "net"
+        "net/url"
         "os"
         "strconv"
 )
 
 // Config holds all runtime configuration, sourced from environment variables
-// (Railway-injected) with sane local defaults.
+// (Railway-injected) with sane local defaults. Deploying on Railway needs ZERO
+// manually-typed variables: DATABASE_URL arrives by connecting the postgres
+// service in the UI, PORT and RAILWAY_TCP_PROXY_* / RAILWAY_TCP_APPLICATION_PORT
+// are injected by the platform, everything else has a default.
 type Config struct {
         HTTPPort     string // public API port (Railway PORT)
         DatabaseURL  string // Postgres connection string (required)
         RedisURL     string // optional; sessions/ratelimit fall back to memory
-        Secret       string // optional HMAC secret (sub-token signing)
         RealitySNI   string // default Reality serverName
         SessionHours int    // admin session lifetime
 
@@ -57,12 +61,49 @@ func geti(k string, d int) int {
         return d
 }
 
+// databaseURL resolves the Postgres DSN. Priority: DATABASE_URL, then a URL
+// assembled from libpq-style PG* variables (some platforms/providers inject
+// only those). This keeps deployments that expose PG* working with zero setup.
+func databaseURL() string {
+        if v := os.Getenv("DATABASE_URL"); v != "" {
+                return v
+        }
+        host := os.Getenv("PGHOST")
+        if host == "" {
+                return ""
+        }
+        user := os.Getenv("PGUSER")
+        pass := os.Getenv("PGPASSWORD")
+        db := os.Getenv("PGDATABASE")
+        if db == "" {
+                db = user
+        }
+        port := os.Getenv("PGPORT")
+        if port == "" {
+                port = "5432"
+        }
+        u := url.URL{
+                Scheme:   "postgres",
+                Host:     net.JoinHostPort(host, port),
+                Path:     "/" + db,
+                User:     url.UserPassword(user, pass),
+                RawQuery: "sslmode=" + defaultStr(os.Getenv("PGSSLMODE"), "disable"),
+        }
+        return u.String()
+}
+
+func defaultStr(v, d string) string {
+        if v != "" {
+                return v
+        }
+        return d
+}
+
 func Load() *Config {
         return &Config{
                 HTTPPort:     get("PORT", "8080"),
-                DatabaseURL:  get("DATABASE_URL", ""),
+                DatabaseURL:  databaseURL(),
                 RedisURL:     get("REDIS_URL", ""),
-                Secret:       get("SECRET", ""),
                 RealitySNI:   get("REALITY_SNI", "www.samsung.com"),
                 SessionHours: geti("SESSION_HOURS", 24),
 

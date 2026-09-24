@@ -27,7 +27,10 @@ func main() {
         defer stop()
 
         if cfg.DatabaseURL == "" {
-                log.Fatal("DATABASE_URL is required (Railway Postgres or local instance)")
+                log.Fatal("DATABASE_URL is not set.\n" +
+                        "  Railway (no typing needed): open the postgres service → Connect → pick this api service;\n" +
+                        "  DATABASE_URL (and PG*) are injected automatically. Nothing else to configure.\n" +
+                        "  Local: set DATABASE_URL, or PGHOST/PGUSER/PGPASSWORD/PGDATABASE/PGPORT (auto-assembled).")
         }
 
         pool, err := db.Connect(ctx, cfg.DatabaseURL)

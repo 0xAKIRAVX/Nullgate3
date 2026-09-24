@@ -28,7 +28,7 @@
 | 🛡 **Reality + Vision** | دور زدن SNI-block با فاصله‌گیری از سایت‌های واقعی (SNI پیش‌فرض: `www.samsung.com`) |
 | 🚄 **XHTTP / WS / HTTPUpgrade** | عبور از CDN و لبه‌های HTTP — همه روی همان دامنه پنل |
 | 📊 **آمار زنده** | ترافیک لحظه‌ای از statsAPI خود Xray + WebSocket، ذخیره دوره‌ای در PostgreSQL |
-| 🧾 **ساب‌اسکریپشن هوشمند** | لینک‌های آماده per-user با کوئری‌های رمزشده (HMAC) |
+| 🧾 **ساب‌اسکریپشن هوشمند** | لینک‌های آماده per-user با توکن تصادفی امن غیرقابل حدس |
 | 👥 **مدیریت کاربر** | سهمیه حجم، انقضا، انتخاب پروتکل per-user، نوت اختصاصی |
 | 🎛 **اینباند سفارشی** | VLESS/VMess/Trojan × ws/xhttp/grpc/httpupgrade × TLS/Reality از داخل پنل |
 | 🔑 **Reality ماندگار** | کلیدها در دیتابیس‌اند — Redeploy هرگز کلاینت‌ها را نمی‌شکند |
@@ -54,22 +54,16 @@
 
 </div>
 
+**هیچ متغیری را دستی تایپ نکنید** — همه‌چیز با کلیک و تزریق خودکار Railway راه می‌افتد:
+
 1. **پروژه جدید** ← Empty Project
-2. سرویس‌های `postgres` و `redis` را از **Database** اضافه کنید (دقیقاً با همین نام‌ها)
+2. سرویس `postgres` را از **Database** اضافه کنید (redis هم اختیاریست؛ بدون آن نشست‌ها در حافظه می‌مانند)
 3. سرویس **api** را از ریپوی GitHub بسازید — Root Directory = `/` (ریشه)
-4. متغیرهای سرویس api:
-
-   | متغیر | مقدار |
-   |---|---|
-   | `PORT` | `8080` |
-   | `DATABASE_URL` | `${{postgres.DATABASE_URL}}` |
-   | `REDIS_URL` | `${{redis.REDIS_URL}}` |
-   | `SECRET` | یک هگز ۳۲ بایتی تصادفی (`openssl rand -hex 32`) |
-   | `REALITY_SNI` | `www.samsung.com` |
-   | `TCP_HOST` / `TCP_PORT` | دامنه/پورت عمومی TCP Proxy |
-
-5. یک **TCP Proxy** روی سرویس api بسازید که به پورت داخلی `9000` برود → مقدارش را در `TCP_HOST` / `TCP_PORT` بگذارید
+4. دیتابیس را به سرویس api وصل کنید: روی سرویس postgres کلیک → **Connect** (یا از منوی رابط) → سرویس api را انتخاب کنید ← متغیرهای `DATABASE_URL` و `PG*` خودکار تزریق می‌شوند — بدون تایپ
+5. روی سرویس api: **Settings → Networking → Generate TCP Proxy** ← پورت مقصد را `9000` بگذارید. Railway آدرس عمومی را می‌سازد و متغیرهای `RAILWAY_TCP_PROXY_DOMAIN` / `RAILWAY_TCP_PROXY_PORT` / `RAILWAY_TCP_APPLICATION_PORT` را خودکار تزریق می‌کند — پنل این‌ها را خودش می‌خواند، نیازی به `TCP_HOST`/`TCP_PORT` نیست
 6. **Generate Domain** (پورت `8080`) → پنل بالا می‌آید → اولین حساب مدیر را بسازید — تمام! 🎉
+
+> 💡 گزینه‌های شخصی‌سازی (هر دو اختیاری و پیش‌فرض‌دار): `REALITY_SNI` (پیش‌فرض `www.samsung.com`) و `REALITY_NET=grpc` برای ترنسپورت gRPC از روی همان TCP Proxy. جدول کامل پایین را ببینید.
 
 <details>
 <summary><b>➕ اینباند Reality دوم (مثلاً Reality-gRPC) روی سرور شخصی (VPS)</b></summary>
@@ -90,15 +84,16 @@ TCP2_APP_PORT=9001                # پورت داخلی که پروکسی دوم
 
 ## 🔧 همه‌ی متغیرهای محیطی
 
+> روی Railway چیزی را «وارد» نکنید — `PORT`، `DATABASE_URL`/`PG*`، `RAILWAY_TCP_PROXY_*` و `RAILWAY_TCP_APPLICATION_PORT` همگی توسط پلتفرم تزریق می‌شوند و باقی متغیرها پیش‌فرض دار‌ند. جدول فقط برای شخصی‌سازی اختیاریست.
+
 | متغیر | پیش‌فرض | توضیح |
 |---|---|---|
-| `PORT` | `8080` | پورت HTTP پنل |
-| `DATABASE_URL` | — | **اجباری** — اتصال PostgreSQL |
+| `PORT` | `8080` | پورت HTTP پنل (روی Railway خودکار تزریق می‌شود) |
+| `DATABASE_URL` | — | **اجباری** — اتصال PostgreSQL (روی Railway با دکمه Connect خودکار؛ در غیاب آن از متغیرهای `PG*` خودکار ساخته می‌شود) |
 | `REDIS_URL` | — | اختیاری — بدون آن نشست‌ها در حافظه‌اند |
-| `SECRET` | — | کلید HMAC توکن‌های ساب‌اسکریپشن |
 | `REALITY_SNI` | `www.samsung.com` | SNI پیش‌فرض Reality |
 | `SESSION_HOURS` | `24` | عمر نشست ادمین |
-| `TCP_HOST` / `TCP_PORT` | — | آدرس عمومی TCP Proxy اصلی (Reality) |
+| `TCP_HOST` / `TCP_PORT` | — | آدرس عمومی TCP Proxy اصلی (Reality) — روی Railway از `RAILWAY_TCP_PROXY_*` خودکار خوانده می‌شود، فقط برای override دستی |
 | `REALITY_NET` | `tcp` | ترنسپورت Reality داخلی: `tcp` یا `grpc` — روی Railway برای gRPC مقدار `grpc` بگذارید (لینک‌ها خودکار gun می‌شوند) |
 | `REALITY_GRPC_SERVICE` | `nullgate` | نام سرویس gRPC وقتی `REALITY_NET=grpc` است |
 | `TCP2_HOST` / `TCP2_PORT` | — | آدرس عمومی TCP Proxy دوم (اینباندهای سفارشی) |
@@ -150,7 +145,7 @@ TCP2_APP_PORT=9001                # پورت داخلی که پروکسی دوم
 <details>
 <summary><b>Reality پینگ نمی‌دهد</b></summary>
 
-1. `TCP_HOST` / `TCP_PORT` دقیقاً با آدرس TCP Proxy یکی باشند
+1. روی Railway نیازی به `TCP_HOST`/`TCP_PORT` نیست — بعد از Generate TCP Proxy، پنل آدرس را از `RAILWAY_TCP_PROXY_*` خودکار می‌خواند (اگر override دستی گذاشته‌اید دقیقاً با آدرس TCP Proxy یکی باشد)
 2. پروکسی واقعاً به پورت داخلی `9000` (متغیر `RAILWAY_TCP_APPLICATION_PORT`) برود
 3. بعضی ISP ها پورت‌های غیر ۴۴۳ را مسیربندی نمی‌کنند — از داخل VPN دیگر تست بگیرید تا منبع مشکل پیدا شود
 </details>
